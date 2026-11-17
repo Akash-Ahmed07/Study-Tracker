@@ -32,12 +32,14 @@ import { CoursesView } from './components/CoursesView.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { FeatureRequestsView } from './components/FeatureRequestsView.tsx';
 import { FriendsView } from './components/FriendsView.tsx';
+import { LegalDocMode, LegalPage } from './components/LegalPage.tsx';
 import { NotesFilesView } from './components/NotesFilesView.tsx';
 import { OverviewView } from './components/OverviewView.tsx';
 import { SessionsView, TimerPreset } from './components/SessionsView.tsx';
 import { SignInView } from './components/SignInView.tsx';
 import { soundEngine, SoundscapeType } from './lib/soundscape.ts';
 import {
+  connectGoogleWorkspace,
   db,
   googleSignIn,
   handleFirestoreError,
@@ -111,6 +113,31 @@ function StudyTrackerWorkspace() {
     return cleaned || null;
   });
   const [acceptingInviteLink, setAcceptingInviteLink] = useState(false);
+
+  const readLegalFromLocation = useCallback((): LegalDocMode | null => {
+    if (typeof window === 'undefined') return null;
+    const path = window.location.pathname.toLowerCase().replace(/\/+$/, '');
+    const pageParam = new URLSearchParams(window.location.search).get('page')?.toLowerCase();
+    if (path === '/privacy' || pageParam === 'privacy') return 'privacy';
+    if (path === '/terms' || pageParam === 'terms') return 'terms';
+    return null;
+  }, []);
+
+  const [legalMode, setLegalMode] = useState<LegalDocMode | null>(() => readLegalFromLocation());
+
+  useEffect(() => {
+    const onPop = () => setLegalMode(readLegalFromLocation());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [readLegalFromLocation]);
+
+  const openLegalPage = useCallback((mode: LegalDocMode | null) => {
+    setLegalMode(mode);
+    if (typeof window !== 'undefined') {
+      const targetPath = mode === 'privacy' ? '/privacy' : mode === 'terms' ? '/terms' : '/';
+      window.history.pushState({}, '', targetPath);
+    }
+  }, []);
 
   const [activeSection, setActiveSection] = useState<NavSection>('overview');
   const [notesComposeMode, setNotesComposeMode] = useState<'upload' | 'text' | null>(null);
@@ -491,13 +518,28 @@ function StudyTrackerWorkspace() {
       const res = await googleSignIn();
       setAuthUser(res.user);
       setAccessToken(res.accessToken);
-      if (res.accessToken) {
-        notify('Signed in and connected to Google Drive, Gmail, Tasks, and Forms.');
-      }
+      notify('Signed in to Study Tracker.');
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : 'Google Sign-In failed.');
     } finally {
       setIsSigningIn(false);
+    }
+  };
+
+  const handleConnectWorkspace = async () => {
+    try {
+      const res = await connectGoogleWorkspace();
+      setAuthUser(res.user);
+      setAccessToken(res.accessToken);
+      if (res.accessToken) {
+        notify('Connected to Google Drive, Gmail, Tasks, and Forms.');
+      }
+    } catch (err) {
+      notify(
+        err instanceof Error
+          ? err.message
+          : 'Could not authorize Google Workspace access.'
+      );
     }
   };
 
@@ -562,6 +604,16 @@ function StudyTrackerWorkspace() {
     setTimerStartedIso(null);
   };
 
+  if (legalMode) {
+    return (
+      <LegalPage
+        mode={legalMode}
+        onNavigateHome={() => openLegalPage(null)}
+        onSwitchMode={(m) => openLegalPage(m)}
+      />
+    );
+  }
+
   if (!authReady) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center text-sm text-slate-500">
@@ -577,6 +629,7 @@ function StudyTrackerWorkspace() {
         isSigningIn={isSigningIn}
         errorMessage={authError}
         pendingInviteCode={pendingInviteCode}
+        onOpenLegal={(m) => openLegalPage(m)}
       />
     );
   }
@@ -810,7 +863,7 @@ function StudyTrackerWorkspace() {
               onChangeBubbleMode={setBubbleMode}
               onChangeSoundscape={handleChangeSoundscape}
               onChangeSoundVolume={handleChangeSoundVolume}
-              onReconnectWorkspace={() => void handleSignIn()}
+              onReconnectWorkspace={() => void handleConnectWorkspace()}
               onStartQuickTimer={handleStartTimer}
               onStopAndSaveTimer={() => void handleStopAndSaveTimer()}
               onNavigate={(sec) => setActiveSection(sec)}
@@ -824,7 +877,7 @@ function StudyTrackerWorkspace() {
               courses={courses}
               topics={topics}
               accessToken={accessToken}
-              onRequestAuth={() => void handleSignIn()}
+              onRequestAuth={() => void handleConnectWorkspace()}
               onNotify={notify}
             />
           )}
@@ -863,7 +916,7 @@ function StudyTrackerWorkspace() {
               friendProfiles={friendProfiles}
               studyGroups={studyGroups}
               accessToken={accessToken}
-              onRequestAuth={() => void handleSignIn()}
+              onRequestAuth={() => void handleConnectWorkspace()}
               onNotify={notify}
               initialComposeMode={notesComposeMode}
             />
@@ -887,7 +940,7 @@ function StudyTrackerWorkspace() {
               accessToken={accessToken}
               pendingInviteCode={pendingInviteCode}
               onClearPendingInvite={() => setPendingInviteCode(null)}
-              onRequestAuth={() => void handleSignIn()}
+              onRequestAuth={() => void handleConnectWorkspace()}
               onNotify={notify}
             />
           )}
@@ -898,7 +951,7 @@ function StudyTrackerWorkspace() {
               formConfig={featureFormConfig}
               requests={featureRequests}
               accessToken={accessToken}
-              onRequestAuth={() => void handleSignIn()}
+              onRequestAuth={() => void handleConnectWorkspace()}
               onNotify={notify}
             />
           )}

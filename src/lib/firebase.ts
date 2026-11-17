@@ -3,6 +3,7 @@ import {
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
+  reauthenticateWithPopup,
   signInWithPopup,
   User,
 } from 'firebase/auth';
@@ -29,11 +30,14 @@ const databaseId =
 export const db = getFirestore(app, databaseId);
 export const auth = getAuth(app);
 
-const provider = new GoogleAuthProvider();
+const basicProvider = new GoogleAuthProvider();
+basicProvider.setCustomParameters({ prompt: 'select_account' });
+
+const workspaceProvider = new GoogleAuthProvider();
 for (const scope of WORKSPACE_SCOPES) {
-  provider.addScope(scope);
+  workspaceProvider.addScope(scope);
 }
-provider.setCustomParameters({ prompt: 'select_account' });
+workspaceProvider.setCustomParameters({ prompt: 'consent select_account' });
 
 // In-memory only OAuth access token (never localStorage or sessionStorage)
 let isSigningIn = false;
@@ -118,19 +122,52 @@ export function initAuth(
   });
 }
 
+function formatAuthError(error: unknown): Error {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: string }).code;
+    if (code === 'auth/unauthorized-domain') {
+      const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+      return new Error(
+        `Domain "${host}" is not authorized in Firebase Authentication for project "${firebaseConfig.projectId}". Add "${host}" under Firebase Console → Authentication → Settings → Authorized domains.`
+      );
+    }
+  }
+  return error instanceof Error ? error : new Error('Google Sign-In failed.');
+}
+
 export async function googleSignIn(): Promise<{
   user: User;
   accessToken: string | null;
 }> {
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
+    const result = await signInWithPopup(auth, basicProvider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     cachedAccessToken = credential?.accessToken ?? null;
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error) {
     console.error('Google Sign-In error:', error);
-    throw error;
+    throw formatAuthError(error);
+  } finally {
+    isSigningIn = false;
+  }
+}
+
+export async function connectGoogleWorkspace(): Promise<{
+  user: User;
+  accessToken: string | null;
+}> {
+  try {
+    isSigningIn = true;
+    const result = auth.currentUser
+      ? await reauthenticateWithPopup(auth.currentUser, workspaceProvider)
+      : await signInWithPopup(auth, workspaceProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    cachedAccessToken = credential?.accessToken ?? null;
+    return { user: result.user, accessToken: cachedAccessToken };
+  } catch (error) {
+    console.error('Google Workspace connection error:', error);
+    throw formatAuthError(error);
   } finally {
     isSigningIn = false;
   }

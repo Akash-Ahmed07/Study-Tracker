@@ -2,13 +2,17 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   BookOpen,
   Calculator,
+  Check,
   Clock,
+  Copy,
+  ExternalLink,
   FileText,
   Pause,
   Play,
   RotateCcw,
   Users,
 } from 'lucide-react';
+import firebaseConfig from '../../firebase-applet-config.json';
 import { computeRequiredGpa } from '../lib/gpa.ts';
 import { soundEngine } from '../lib/soundscape.ts';
 import { AmbientBubbles } from './AmbientBubbles.tsx';
@@ -18,6 +22,7 @@ interface SignInViewProps {
   isSigningIn: boolean;
   errorMessage?: string | null;
   pendingInviteCode?: string | null;
+  onOpenLegal?: (mode: 'privacy' | 'terms') => void;
 }
 
 function formatTimerClock(seconds: number): string {
@@ -31,6 +36,7 @@ export const SignInView: React.FC<SignInViewProps> = ({
   isSigningIn,
   errorMessage,
   pendingInviteCode,
+  onOpenLegal,
 }) => {
   // Public Guest Focus Timer (works without login!)
   const [guestTargetMins, setGuestTargetMins] = useState(25);
@@ -43,6 +49,13 @@ export const SignInView: React.FC<SignInViewProps> = ({
   const [completedCr, setCompletedCr] = useState('60');
   const [targetCgpa, setTargetCgpa] = useState('3.65');
   const [remainingCr, setRemainingCr] = useState('30');
+  const [copiedHost, setCopiedHost] = useState(false);
+
+  const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isUnauthorizedDomainError =
+    Boolean(errorMessage) &&
+    (errorMessage?.includes('unauthorized-domain') ||
+      errorMessage?.includes('not authorized in Firebase Authentication'));
 
   useEffect(() => {
     if (!guestRunning) return;
@@ -166,7 +179,39 @@ export const SignInView: React.FC<SignInViewProps> = ({
               </button>
 
               {errorMessage && (
-                <p className="text-sm text-red-600 dark:text-red-400">{errorMessage}</p>
+                <div className="glass-subtle border border-red-200 dark:border-red-900/60 rounded-xl p-3.5 space-y-2.5 text-sm text-red-700 dark:text-red-300">
+                  <p>{errorMessage}</p>
+                  {isUnauthorizedDomainError && currentHost && (
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(currentHost).then(() => {
+                            setCopiedHost(true);
+                            setTimeout(() => setCopiedHost(false), 2000);
+                          });
+                        }}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-medium bg-white/90 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 rounded-md hover:bg-white"
+                      >
+                        {copiedHost ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                        {copiedHost ? 'Copied!' : `Copy "${currentHost}"`}
+                      </button>
+                      <a
+                        href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md"
+                      >
+                        Open Firebase Authorized Domains
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  )}
+                </div>
               )}
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Tip: If sign-in is blocked by popup blockers or a restricted university email, allow popups or use the guest tools below.
@@ -435,9 +480,35 @@ export const SignInView: React.FC<SignInViewProps> = ({
         </section>
       </main>
 
-      <footer className="w-full max-w-6xl mx-auto px-6 py-5 border-t border-white/50 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400 flex items-center justify-between relative z-10">
-        <span>Study Tracker</span>
-        <span>Guest tools available · Private grades · Google Workspace connected</span>
+      <footer className="w-full max-w-6xl mx-auto px-6 py-5 border-t border-white/50 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400 flex flex-col sm:flex-row items-center justify-between gap-2 relative z-10">
+        <span>Study Tracker · University Academic Workspace</span>
+        <div className="flex flex-wrap items-center gap-4">
+          <a
+            href="/privacy"
+            onClick={(e) => {
+              if (onOpenLegal) {
+                e.preventDefault();
+                onOpenLegal('privacy');
+              }
+            }}
+            className="text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 underline underline-offset-2"
+          >
+            Privacy Policy
+          </a>
+          <a
+            href="/terms"
+            onClick={(e) => {
+              if (onOpenLegal) {
+                e.preventDefault();
+                onOpenLegal('terms');
+              }
+            }}
+            className="text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 underline underline-offset-2"
+          >
+            Terms of Service
+          </a>
+          <span>Private grades · Guest tools ready</span>
+        </div>
       </footer>
     </div>
   );
