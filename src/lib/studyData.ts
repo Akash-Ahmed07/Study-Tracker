@@ -1170,6 +1170,32 @@ export async function setUserSuspensionAdmin(
   }
 }
 
+export async function setBulkUserSuspensionAdmin(
+  targetUids: string[],
+  suspended: boolean,
+  reason = ''
+): Promise<void> {
+  const uniqueUids = Array.from(new Set(targetUids.filter(Boolean)));
+  if (uniqueUids.length === 0) return;
+  const cleanReason = suspended ? reason.trim().slice(0, 300) : '';
+  const path = `users/bulk(${uniqueUids.length})`;
+  try {
+    for (let i = 0; i < uniqueUids.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const uid of uniqueUids.slice(i, i + 400)) {
+        batch.update(doc(db, 'users', uid), {
+          suspended,
+          suspendedReason: cleanReason,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function checkIsDynamicAdmin(uid: string): Promise<boolean> {
   try {
     const snap = await getDoc(doc(db, 'admins', uid));

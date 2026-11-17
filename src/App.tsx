@@ -319,9 +319,27 @@ function StudyTrackerWorkspace() {
   useEffect(() => {
     if (!authUser) return;
     let cancelled = false;
-    void ensureUserInitialized(authUser).then((p) => {
-      if (!cancelled) setProfile(p);
-    });
+    setAuthError(null);
+    void ensureUserInitialized(authUser)
+      .then((p) => {
+        if (!cancelled) setProfile(p);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          let readable =
+            err instanceof Error ? err.message : 'Failed to initialize your Study Tracker profile.';
+          try {
+            const parsed = JSON.parse(readable) as { error?: string; path?: string };
+            if (parsed?.error) {
+              readable = `Firestore initialization failed (${parsed.path || 'users'}): ${parsed.error}`;
+            }
+          } catch {
+            // Plain message
+          }
+          setAuthError(readable);
+          void logout();
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -1382,6 +1400,7 @@ function StudyTrackerWorkspace() {
                   onOpenFocusZoom={() => setFocusZoomOpen(true)}
                   onStartCourseRecoveryFocus={handleStartCourseRecoveryFocus}
                   onNavigate={(sec) => setActiveSection(sec)}
+                  onNotify={notify}
                 />
               )}
 
@@ -1404,6 +1423,7 @@ function StudyTrackerWorkspace() {
                   courses={courses}
                   topics={topics}
                   sessions={sessions}
+                  notes={notes}
                   timerRunning={timerRunning}
                   timerSeconds={timerSeconds}
                   timerPreset={timerPreset}
@@ -1441,7 +1461,14 @@ function StudyTrackerWorkspace() {
               )}
 
               {activeSection === 'cgpa' && (
-                <CgpaView profile={profile} courses={courses} onNotify={notify} />
+                <CgpaView
+                  profile={profile}
+                  courses={courses}
+                  topics={topics}
+                  sessions={sessions}
+                  notes={notes}
+                  onNotify={notify}
+                />
               )}
 
               {activeSection === 'friends' && (

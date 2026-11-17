@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { History, Lock, Plus, RotateCcw, Save } from 'lucide-react';
+import { Download, History, Lock, Plus, RotateCcw, Save } from 'lucide-react';
 import {
   computeGpaReport,
   computeRequiredGpa,
@@ -7,18 +7,37 @@ import {
   getMidtermPercent,
   getScaleEntries,
 } from '../lib/gpa.ts';
+import { downloadWeeklySeabornPdf } from '../lib/reports.ts';
 import { saveCourse, updateUserPreferences } from '../lib/studyData.ts';
-import { Course, GradingScale, UserProfile } from '../lib/types.ts';
+import {
+  Course,
+  GradingScale,
+  NoteOrFile,
+  StudySession,
+  SyllabusTopic,
+  UserProfile,
+} from '../lib/types.ts';
 import { CgpaTrajectoryChart } from './StudyCharts.tsx';
 
 interface CgpaViewProps {
   profile: UserProfile;
   courses: Course[];
+  topics?: SyllabusTopic[];
+  sessions?: StudySession[];
+  notes?: NoteOrFile[];
   onNotify: (msg: string) => void;
 }
 
-export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }) => {
+export const CgpaView: React.FC<CgpaViewProps> = ({
+  profile,
+  courses,
+  topics = [],
+  sessions = [],
+  notes = [],
+  onNotify,
+}) => {
   const [scale, setScale] = useState<GradingScale>(profile.gradingScale || 'bd');
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [targetCgpa, setTargetCgpa] = useState('3.75');
   const [remainingCredits, setRemainingCredits] = useState('15');
   const [whatIfGrades, setWhatIfGrades] = useState<Record<string, string>>({});
@@ -160,43 +179,77 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
   };
 
   const cgpaDelta = projectedReport.cgpa - actualReport.cgpa;
+  const cgpaScalePct =
+    actualReport.completedCredits > 0
+      ? Math.min(100, Math.round((actualReport.cgpa / 4.0) * 100))
+      : 0;
+
+  const handleDownloadPdf = async () => {
+    setDownloadingPdf(true);
+    try {
+      await downloadWeeklySeabornPdf({
+        profile: { ...profile, gradingScale: scale },
+        courses,
+        topics,
+        sessions,
+        notes,
+      });
+      onNotify('CGPA 4.00 & Weekly Performance PDF downloaded (Python Seaborn).');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Failed to generate PDF report.');
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
 
   return (
     <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
-            CGPA, Old Semesters &amp; Upcoming Projections
+            CGPA 4.00, Old Semesters &amp; Upcoming Projections
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            Private to your account — combines saved prior semesters with current &amp; upcoming courses.
+            Private to your account — combines saved prior semesters with current &amp; upcoming courses on a 4.00 scale.
           </p>
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg shrink-0 self-start">
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0 self-start">
           <button
             type="button"
-            onClick={() => void handleScaleChange('bd')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
-              scale === 'bd'
-                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-xs'
-                : 'text-slate-600 dark:text-slate-400'
-            }`}
+            disabled={downloadingPdf}
+            onClick={() => void handleDownloadPdf()}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-cyan-500 dark:text-slate-950 hover:bg-slate-800 dark:hover:bg-cyan-400 rounded-lg transition-colors disabled:opacity-60 whitespace-nowrap"
           >
-            Bangladesh 4.00
+            <Download className="w-3.5 h-3.5" />
+            {downloadingPdf ? 'Generating PDF...' : 'Download CGPA & Weekly PDF'}
           </button>
-          <button
-            type="button"
-            onClick={() => void handleScaleChange('us')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
-              scale === 'us'
-                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-xs'
-                : 'text-slate-600 dark:text-slate-400'
-            }`}
-          >
-            US 4.0
-          </button>
+
+          <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
+            <button
+              type="button"
+              onClick={() => void handleScaleChange('bd')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                scale === 'bd'
+                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Bangladesh 4.00
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleScaleChange('us')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                scale === 'us'
+                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              US 4.00
+            </button>
+          </div>
         </div>
       </div>
 
@@ -262,13 +315,25 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
       {/* Top Metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="glass-panel rounded-xl p-5">
-          <span className="text-xs text-slate-500 dark:text-slate-400">
-            Cumulative CGPA (Old + Current)
-          </span>
-          <div className="mt-2 font-mono text-3xl font-semibold tabular-nums text-slate-900 dark:text-slate-50">
-            {actualReport.completedCredits > 0 ? actualReport.cgpa.toFixed(2) : '—'}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Cumulative CGPA (Old + Current)
+            </span>
+            <span className="text-[11px] font-mono text-cyan-700 dark:text-cyan-300 tabular-nums">
+              {cgpaScalePct}% of 4.00
+            </span>
           </div>
-          <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+          <div className="mt-2 font-mono text-3xl font-semibold tabular-nums text-slate-900 dark:text-slate-50">
+            {actualReport.completedCredits > 0 ? actualReport.cgpa.toFixed(2) : '—'}{' '}
+            <span className="text-base font-normal text-slate-400">/ 4.00</span>
+          </div>
+          <div className="mt-2.5 w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-blue-600 to-cyan-500 rounded-full transition-all duration-300"
+              style={{ width: `${cgpaScalePct}%` }}
+            />
+          </div>
+          <span className="mt-2 block text-xs text-slate-500 dark:text-slate-400 tabular-nums">
             {actualReport.completedCredits} total credits
             {actualReport.priorCredits > 0 ? ` (${actualReport.priorCredits} old + ${actualReport.completedCredits - actualReport.priorCredits} new)` : ''}
           </span>

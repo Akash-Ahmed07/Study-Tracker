@@ -203,6 +203,22 @@ export const SignInView: React.FC<SignInViewProps> = ({
               {errorMessage && (
                 <div className="glass-subtle border border-red-200 dark:border-red-900/60 rounded-xl p-3.5 space-y-2.5 text-sm text-red-700 dark:text-red-300">
                   <p>{errorMessage}</p>
+                  {typeof window !== 'undefined' &&
+                    window.self !== window.top &&
+                    (errorMessage.toLowerCase().includes('popup') ||
+                      isUnauthorizedDomainError) && (
+                      <div className="pt-1">
+                        <a
+                          href={window.location.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 rounded-md hover:opacity-90"
+                        >
+                          Open Study Tracker in New Tab
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+                    )}
                   {isUnauthorizedDomainError && currentHost && (
                     <div className="flex flex-wrap items-center gap-2 pt-1">
                       <button

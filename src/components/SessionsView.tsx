@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { Download, Flame, HeartHandshake, Maximize2, Pause, Play, Plus, Square, Target, Trash2 } from 'lucide-react';
+import { Download, FileBarChart2, Flame, HeartHandshake, Maximize2, Pause, Play, Plus, Square, Target, Trash2 } from 'lucide-react';
+import { downloadWeeklySeabornPdf } from '../lib/reports.ts';
 import {
   computeStreakDays,
   computeWeeklyMinutes,
@@ -7,7 +8,7 @@ import {
   logStudySession,
   updateUserPreferences,
 } from '../lib/studyData.ts';
-import { Course, StudySession, SyllabusTopic, UserProfile } from '../lib/types.ts';
+import { Course, NoteOrFile, StudySession, SyllabusTopic, UserProfile } from '../lib/types.ts';
 import { StudyConsistencyHeatmap } from './StudyCharts.tsx';
 
 export type TimerPreset = 'free' | 'pomodoro25' | 'deep50';
@@ -17,6 +18,7 @@ interface SessionsViewProps {
   courses: Course[];
   topics: SyllabusTopic[];
   sessions: StudySession[];
+  notes?: NoteOrFile[];
   timerRunning: boolean;
   timerSeconds: number;
   timerPreset: TimerPreset;
@@ -44,6 +46,7 @@ export const SessionsView: React.FC<SessionsViewProps> = ({
   courses,
   topics,
   sessions,
+  notes = [],
   timerRunning,
   timerSeconds,
   timerPreset,
@@ -59,6 +62,7 @@ export const SessionsView: React.FC<SessionsViewProps> = ({
   onNotify,
 }) => {
   const [timerNote, setTimerNote] = useState('');
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [manualCourseId, setManualCourseId] = useState(courses[0]?.id || '');
   const [manualDuration, setManualDuration] = useState('45');
   const [manualDate, setManualDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -152,6 +156,24 @@ export const SessionsView: React.FC<SessionsViewProps> = ({
     onNotify('Exported study sessions as CSV.');
   };
 
+  const handleDownloadPdf = async () => {
+    setDownloadingPdf(true);
+    try {
+      await downloadWeeklySeabornPdf({
+        profile,
+        courses,
+        topics,
+        sessions,
+        notes,
+      });
+      onNotify('Weekly Performance PDF generated with Python Seaborn & downloaded.');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Failed to generate Weekly PDF.');
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
   const targetSeconds =
     timerPreset === 'pomodoro25' ? 25 * 60 : timerPreset === 'deep50' ? 50 * 60 : null;
   const remainingSeconds = targetSeconds !== null ? Math.max(0, targetSeconds - timerSeconds) : null;
@@ -159,13 +181,25 @@ export const SessionsView: React.FC<SessionsViewProps> = ({
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
-          Study Sessions, Timer & Streaks
-        </h1>
-        <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-          Run a live focus timer or log manual study sessions to build your daily streak and weekly target.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
+            Study Sessions, Timer &amp; Streaks
+          </h1>
+          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+            Run a live focus timer or log manual study sessions to build your daily streak and weekly target.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          disabled={downloadingPdf}
+          onClick={() => void handleDownloadPdf()}
+          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-cyan-500 dark:text-slate-950 hover:bg-slate-800 dark:hover:bg-cyan-400 rounded-lg transition-colors disabled:opacity-60 whitespace-nowrap self-start sm:self-auto"
+        >
+          <FileBarChart2 className="w-3.5 h-3.5" />
+          {downloadingPdf ? 'Generating Seaborn PDF...' : 'Download Weekly PDF (Seaborn)'}
+        </button>
       </div>
 
       {/* Top Grid: Live Timer + Weekly Goal & Streak */}
@@ -464,16 +498,27 @@ export const SessionsView: React.FC<SessionsViewProps> = ({
               {sessions.length} entries
             </span>
           </div>
-          {sessions.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={handleExportCsv}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg whitespace-nowrap"
+              disabled={downloadingPdf}
+              onClick={() => void handleDownloadPdf()}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-300 bg-cyan-50 dark:bg-cyan-950/60 border border-cyan-200 dark:border-cyan-800 hover:bg-cyan-100 dark:hover:bg-cyan-900/60 rounded-lg disabled:opacity-60 whitespace-nowrap"
             >
-              <Download className="w-3.5 h-3.5" />
-              Export CSV
+              <FileBarChart2 className="w-3.5 h-3.5" />
+              {downloadingPdf ? 'Building PDF...' : 'Weekly PDF (Seaborn)'}
             </button>
-          )}
+            {sessions.length > 0 && (
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg whitespace-nowrap"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Export CSV
+              </button>
+            )}
+          </div>
         </div>
         {sessions.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">

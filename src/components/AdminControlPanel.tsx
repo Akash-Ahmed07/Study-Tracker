@@ -4,6 +4,7 @@ import {
   Activity,
   AlertTriangle,
   Ban,
+  BarChart3,
   CheckCircle2,
   Download,
   Edit3,
@@ -46,6 +47,7 @@ import {
   saveFeatureFormConfig,
   saveGlobalAnnouncement,
   saveSystemSettingsConfig,
+  setBulkUserSuspensionAdmin,
   setUserSuspensionAdmin,
   updateFeatureRequestAdmin,
   updateStudyGroupAdmin,
@@ -125,10 +127,13 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
     message: string;
   }>({ checked: false, ok: false, message: 'Checking...' });
 
-  // User directory filters & power modals
+  // User directory filters, selection & power modals
   const [userSearch, setUserSearch] = useState('');
   const [userFilter, setUserFilter] = useState<'all' | 'active' | 'suspended' | 'admins'>('all');
   const [busyUid, setBusyUid] = useState<string | null>(null);
+  const [selectedUids, setSelectedUids] = useState<string[]>([]);
+  const [bulkReason, setBulkReason] = useState('Suspended by site administrator.');
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [suspendTarget, setSuspendTarget] = useState<UserProfile | null>(null);
   const [suspendReason, setSuspendReason] = useState('Suspended by site administrator.');
   const [editUserTarget, setEditUserTarget] = useState<UserProfile | null>(null);
@@ -302,21 +307,146 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
   }, []);
 
   const stats = useMemo(() => {
+    const totalUsers = users.length;
     const suspendedCount = users.filter((u) => u.suspended).length;
-    const totalWeeklyHours =
-      publicProfiles.reduce((acc, p) => acc + (Number(p.weeklyMinutes) || 0), 0) / 60;
-    const openRequests = featureRequests.filter((r) => r.status === 'open').length;
+    const activeCount = Math.max(0, totalUsers - suspendedCount);
+    const activePct = totalUsers > 0 ? Math.round((activeCount / totalUsers) * 100) : 0;
     const adminCount = users.filter((u) => isTargetAdmin(u)).length;
+    const bdScaleCount = users.filter((u) => u.gradingScale === 'bd').length;
+    const usScaleCount = users.filter((u) => u.gradingScale === 'us').length;
+
+    const totalWeeklyMinutes = publicProfiles.reduce(
+      (acc, p) => acc + (Number(p.weeklyMinutes) || 0),
+      0
+    );
+    const totalWeeklyHours = totalWeeklyMinutes / 60;
+    const avgWeeklyHoursPerUser = totalUsers > 0 ? totalWeeklyHours / totalUsers : 0;
+
+    let activeWeeklyUsers = 0;
+    let goalMetCount = 0;
+    let totalStreakDays = 0;
+    let maxStreakDays = 0;
+    let totalTrackedCourses = 0;
+    let totalTopicsTracked = 0;
+    let totalTopicsDone = 0;
+
+    const buckets = [
+      { label: '0h (Idle)', count: 0 },
+      { label: '< 2h', count: 0 },
+      { label: '2h – 5h', count: 0 },
+      { label: '5h – 10h', count: 0 },
+      { label: '10h+ (High)', count: 0 },
+    ];
+
+    for (const u of users) {
+      const pub = publicMap.get(u.uid);
+      const mins = Number(pub?.weeklyMinutes) || 0;
+      const goal = Number(pub?.weeklyGoalMinutes || u.weeklyGoalMinutes) || 600;
+      const streak = Number(pub?.streakDays) || 0;
+      if (mins > 0) activeWeeklyUsers += 1;
+      if (mins >= goal) goalMetCount += 1;
+      totalStreakDays += streak;
+      if (streak > maxStreakDays) maxStreakDays = streak;
+
+      const hrs = mins / 60;
+      if (hrs <= 0) buckets[0].count += 1;
+      else if (hrs < 2) buckets[1].count += 1;
+      else if (hrs < 5) buckets[2].count += 1;
+      else if (hrs < 10) buckets[3].count += 1;
+      else buckets[4].count += 1;
+    }
+
+    for (const p of publicProfiles) {
+      const courses = Array.isArray(p.courseProgress) ? p.courseProgress : [];
+      totalTrackedCourses += courses.length;
+      for (const c of courses) {
+        totalTopicsTracked += Number(c.totalTopics) || 0;
+        totalTopicsDone += Number(c.doneTopics) || 0;
+      }
+    }
+
+    const avgStreakDays = totalUsers > 0 ? totalStreakDays / totalUsers : 0;
+    const goalMetPct = totalUsers > 0 ? Math.round((goalMetCount / totalUsers) * 100) : 0;
+    const overallTopicCompletionPct =
+      totalTopicsTracked > 0 ? Math.round((totalTopicsDone / totalTopicsTracked) * 100) : 0;
+
+    const topLearners = [...users]
+      .map((u) => {
+        const pub = publicMap.get(u.uid);
+        const mins = Number(pub?.weeklyMinutes) || 0;
+        const goal = Number(pub?.weeklyGoalMinutes || u.weeklyGoalMinutes) || 600;
+        const streak = Number(pub?.streakDays) || 0;
+        return {
+          uid: u.uid,
+          displayName: u.displayName,
+          suspended: Boolean(u.suspended),
+          weeklyHours: mins / 60,
+          goalHours: goal / 60,
+          goalPct: Math.min(100, Math.round((mins / Math.max(1, goal)) * 100)),
+          streakDays: streak,
+        };
+      })
+      .sort((a, b) => b.weeklyHours - a.weeklyHours)
+      .slice(0, 5);
+
+    const totalGroupMemberships = allGroups.reduce(
+      (acc, g) => acc + (Array.isArray(g.memberUids) ? g.memberUids.length : 0),
+      0
+    );
+    const avgMembersPerGroup =
+      allGroups.length > 0 ? totalGroupMemberships / allGroups.length : 0;
+
+    const sharedTextCount = sharedNotes.filter((n) => n.kind === 'text').length;
+    const sharedFileCount = sharedNotes.filter((n) => n.kind === 'file').length;
+    const sharedTotalBytes = sharedNotes.reduce((acc, n) => acc + (Number(n.sizeBytes) || 0), 0);
+
+    const openRequests = featureRequests.filter((r) => r.status === 'open').length;
+    const plannedRequests = featureRequests.filter((r) => r.status === 'planned').length;
+    const shippedRequests = featureRequests.filter((r) => r.status === 'shipped').length;
+    const declinedRequests = featureRequests.filter((r) => r.status === 'declined').length;
+
     return {
-      totalUsers: users.length,
+      totalUsers,
+      activeCount,
       suspendedCount,
+      activePct,
       adminCount,
+      bdScaleCount,
+      usScaleCount,
       totalGroups: allGroups.length,
+      totalGroupMemberships,
+      avgMembersPerGroup,
       totalShared: sharedNotes.length,
+      sharedTextCount,
+      sharedFileCount,
+      sharedTotalBytes,
       totalWeeklyHours,
+      avgWeeklyHoursPerUser,
+      activeWeeklyUsers,
+      goalMetCount,
+      goalMetPct,
+      avgStreakDays,
+      maxStreakDays,
+      totalTrackedCourses,
+      totalTopicsTracked,
+      totalTopicsDone,
+      overallTopicCompletionPct,
+      focusBuckets: buckets,
+      topLearners,
       openRequests,
+      plannedRequests,
+      shippedRequests,
+      declinedRequests,
     };
-  }, [allGroups.length, featureRequests, isTargetAdmin, publicProfiles, sharedNotes.length, users]);
+  }, [
+    allGroups,
+    featureRequests,
+    isTargetAdmin,
+    publicMap,
+    publicProfiles,
+    sharedNotes,
+    users,
+  ]);
 
   const filteredUsers = useMemo(() => {
     const q = userSearch.trim().toLowerCase();
@@ -391,6 +521,36 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
     }
   };
 
+  const handleDirectStatusChange = async (target: UserProfile, nextSuspended: boolean) => {
+    if (isSuperAdminEmail(target.email) || target.uid === profile.uid) {
+      onNotify('Core admin or current account status cannot be modified.');
+      return;
+    }
+    const reason = nextSuspended
+      ? target.suspendedReason?.trim() || 'Suspended by site administrator.'
+      : '';
+    setBusyUid(target.uid);
+    try {
+      await setUserSuspensionAdmin(target.uid, nextSuspended, reason);
+      setUsers((prev) =>
+        prev.map((u) =>
+          u.uid === target.uid
+            ? { ...u, suspended: nextSuspended, suspendedReason: reason }
+            : u
+        )
+      );
+      onNotify(
+        nextSuspended
+          ? `Account suspended for ${target.email}.`
+          : `Account activated for ${target.email}.`
+      );
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Failed to update account status.');
+    } finally {
+      setBusyUid(null);
+    }
+  };
+
   const handleConfirmSuspend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!suspendTarget) return;
@@ -418,20 +578,79 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
   };
 
   const handleRestoreUser = async (target: UserProfile) => {
-    setBusyUid(target.uid);
-    try {
-      await setUserSuspensionAdmin(target.uid, false, '');
-      setUsers((prev) =>
-        prev.map((u) =>
-          u.uid === target.uid ? { ...u, suspended: false, suspendedReason: '' } : u
-        )
-      );
-      onNotify(`Restored access for ${target.email}.`);
-    } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Failed to restore student.');
-    } finally {
-      setBusyUid(null);
+    await handleDirectStatusChange(target, false);
+  };
+
+  const modifiableVisibleUids = useMemo(
+    () =>
+      filteredUsers
+        .filter((u) => !isSuperAdminEmail(u.email) && u.uid !== profile.uid)
+        .map((u) => u.uid),
+    [filteredUsers, isSuperAdminEmail, profile.uid]
+  );
+
+  const selectedSet = useMemo(() => new Set(selectedUids), [selectedUids]);
+
+  const allVisibleSelected =
+    modifiableVisibleUids.length > 0 &&
+    modifiableVisibleUids.every((uid) => selectedSet.has(uid));
+
+  const toggleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      const visibleSet = new Set(modifiableVisibleUids);
+      setSelectedUids((prev) => prev.filter((id) => !visibleSet.has(id)));
+    } else {
+      setSelectedUids((prev) => Array.from(new Set([...prev, ...modifiableVisibleUids])));
     }
+  };
+
+  const toggleSelectOne = (uid: string) => {
+    setSelectedUids((prev) =>
+      prev.includes(uid) ? prev.filter((id) => id !== uid) : [...prev, uid]
+    );
+  };
+
+  const handleBulkStatusApply = (nextSuspended: boolean) => {
+    const validTargets = users.filter(
+      (u) => selectedSet.has(u.uid) && !isSuperAdminEmail(u.email) && u.uid !== profile.uid
+    );
+    if (validTargets.length === 0) return;
+    const reason = nextSuspended
+      ? bulkReason.trim() || 'Suspended by site administrator.'
+      : '';
+    setConfirmState({
+      open: true,
+      title: nextSuspended ? 'Suspend Selected Accounts' : 'Activate Selected Accounts',
+      description: nextSuspended
+        ? `Immediately suspend ${validTargets.length} selected student account(s)?`
+        : `Restore active access for ${validTargets.length} selected student account(s)?`,
+      details: validTargets.slice(0, 6).map((u) => `${u.displayName} (${u.email})`),
+      confirmLabel: nextSuspended ? 'Suspend Selected' : 'Activate Selected',
+      tone: nextSuspended ? 'danger' : 'primary',
+      action: async () => {
+        setBulkBusy(true);
+        try {
+          const targetIds = validTargets.map((u) => u.uid);
+          await setBulkUserSuspensionAdmin(targetIds, nextSuspended, reason);
+          const idSet = new Set(targetIds);
+          setUsers((prev) =>
+            prev.map((u) =>
+              idSet.has(u.uid)
+                ? { ...u, suspended: nextSuspended, suspendedReason: reason }
+                : u
+            )
+          );
+          setSelectedUids([]);
+          onNotify(
+            nextSuspended
+              ? `Suspended ${targetIds.length} account(s).`
+              : `Activated ${targetIds.length} account(s).`
+          );
+        } finally {
+          setBulkBusy(false);
+        }
+      },
+    });
   };
 
   const handleSaveUserEdit = async (e: React.FormEvent) => {
@@ -763,7 +982,7 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
     'ai-studio-studytracker-e35d7615-f3a0-43c8-aca6-ee7b8e3d95bf';
 
   const tabs: { id: AdminTab; label: string; icon: React.FC<{ className?: string }> }[] = [
-    { id: 'overview', label: 'Overview & Health', icon: Activity },
+    { id: 'overview', label: 'Overview & Usage', icon: BarChart3 },
     { id: 'users', label: `Students & Roles (${stats.totalUsers})`, icon: Users },
     { id: 'announcements', label: 'Banner & System', icon: Settings },
     { id: 'groups', label: `Groups (${stats.totalGroups})`, icon: MessageSquare },
@@ -898,17 +1117,18 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
           >
-            {/* Tab 1: Overview & Diagnostics */}
+            {/* Tab 1: Overview, Aggregate App Usage & Diagnostics */}
             {tab === 'overview' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                   <div className="glass-panel rounded-xl p-5">
-                    <div className="text-xs text-slate-500">Registered Students</div>
+                    <div className="text-xs text-slate-500">Registered Accounts</div>
                     <div className="font-mono text-3xl font-bold tabular-nums mt-1">
                       {stats.totalUsers}
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-1">
-                      {stats.suspendedCount} suspended · {stats.adminCount} admin(s)
+                    <div className="text-[11px] text-slate-500 mt-1 tabular-nums">
+                      {stats.activeCount} active ({stats.activePct}%) · {stats.suspendedCount}{' '}
+                      suspended · {stats.adminCount} admin(s)
                     </div>
                   </div>
                   <div className="glass-panel rounded-xl p-5">
@@ -916,26 +1136,217 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                     <div className="font-mono text-3xl font-bold tabular-nums mt-1 text-blue-600 dark:text-blue-400">
                       {stats.totalWeeklyHours.toFixed(1)}h
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-1">
-                      Across all public trackers
+                    <div className="text-[11px] text-slate-500 mt-1 tabular-nums">
+                      Avg {stats.avgWeeklyHoursPerUser.toFixed(1)}h/user · {stats.activeWeeklyUsers}{' '}
+                      active this week
                     </div>
                   </div>
                   <div className="glass-panel rounded-xl p-5">
-                    <div className="text-xs text-slate-500">Groups &amp; Shared Notes</div>
+                    <div className="text-xs text-slate-500">Curriculum &amp; Streaks</div>
                     <div className="font-mono text-3xl font-bold tabular-nums mt-1 text-emerald-600 dark:text-emerald-400">
+                      {stats.overallTopicCompletionPct}%
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-1 tabular-nums">
+                      {stats.totalTopicsDone}/{stats.totalTopicsTracked} topics · Max{' '}
+                      {stats.maxStreakDays}d streak
+                    </div>
+                  </div>
+                  <div className="glass-panel rounded-xl p-5">
+                    <div className="text-xs text-slate-500">Groups &amp; Shared Library</div>
+                    <div className="font-mono text-3xl font-bold tabular-nums mt-1 text-amber-600 dark:text-amber-400">
                       {stats.totalGroups} / {stats.totalShared}
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-1">
-                      Active groups / shared items
+                    <div className="text-[11px] text-slate-500 mt-1 tabular-nums">
+                      {stats.totalGroupMemberships} memberships ·{' '}
+                      {(stats.sharedTotalBytes / (1024 * 1024)).toFixed(1)} MB files
                     </div>
                   </div>
-                  <div className="glass-panel rounded-xl p-5">
-                    <div className="text-xs text-slate-500">Open Feature Requests</div>
-                    <div className="font-mono text-3xl font-bold tabular-nums mt-1 text-amber-600 dark:text-amber-400">
-                      {stats.openRequests}
+                </div>
+
+                {/* Aggregate App Usage Analytics */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Focus Distribution & Top Active Learners */}
+                  <div className="glass-panel rounded-xl p-6 space-y-5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <h2 className="text-base font-semibold">Weekly Study Focus Distribution</h2>
+                        <p className="text-xs text-slate-500">
+                          Aggregate hours logged per registered student this week
+                        </p>
+                      </div>
+                      <span className="font-mono text-xs tabular-nums text-slate-600 dark:text-slate-300">
+                        {stats.goalMetCount}/{stats.totalUsers} hit goal ({stats.goalMetPct}%)
+                      </span>
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-1">
-                      {featureRequests.length} total submissions
+
+                    <div className="space-y-3">
+                      {stats.focusBuckets.map((bucket) => {
+                        const pct =
+                          stats.totalUsers > 0
+                            ? Math.round((bucket.count / stats.totalUsers) * 100)
+                            : 0;
+                        return (
+                          <div key={bucket.label} className="space-y-1">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="text-slate-700 dark:text-slate-300 font-medium">
+                                {bucket.label}
+                              </span>
+                              <span className="font-mono tabular-nums text-slate-500">
+                                {bucket.count} user(s) · {pct}%
+                              </span>
+                            </div>
+                            <div className="h-2 w-full bg-slate-200/80 dark:bg-slate-800 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-blue-600 dark:bg-blue-500 rounded-full transition-all duration-300"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="border-t border-slate-200/80 dark:border-slate-800 pt-4 space-y-2.5">
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200">
+                        <span>Top Weekly Learners</span>
+                        <span className="font-mono font-normal text-slate-500 tabular-nums">
+                          Avg streak {stats.avgStreakDays.toFixed(1)}d
+                        </span>
+                      </div>
+                      {stats.topLearners.length === 0 ? (
+                        <p className="text-xs text-slate-500">No student activity recorded yet.</p>
+                      ) : (
+                        <div className="divide-y divide-slate-200/70 dark:divide-slate-800/80 text-xs">
+                          {stats.topLearners.map((learner, idx) => (
+                            <div
+                              key={learner.uid}
+                              className="py-2 flex items-center justify-between gap-3"
+                            >
+                              <div className="min-w-0 flex items-center gap-2">
+                                <span className="font-mono text-slate-400 tabular-nums w-4">
+                                  {idx + 1}.
+                                </span>
+                                <span className="font-medium truncate">{learner.displayName}</span>
+                                {learner.suspended && (
+                                  <span className="text-[11px] text-red-600 dark:text-red-400">
+                                    · Suspended
+                                  </span>
+                                )}
+                              </div>
+                              <div className="font-mono tabular-nums text-slate-600 dark:text-slate-300 shrink-0">
+                                {learner.weeklyHours.toFixed(1)}h / {learner.goalHours.toFixed(0)}h ·{' '}
+                                {learner.streakDays}d
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Platform Feature Adoption & Content Breakdown */}
+                  <div className="glass-panel rounded-xl p-6 space-y-4">
+                    <div>
+                      <h2 className="text-base font-semibold">Aggregate App Usage Breakdown</h2>
+                      <p className="text-xs text-slate-500">
+                        Live summary across accounts, courses, study groups, shared notes, and requests
+                      </p>
+                    </div>
+
+                    <div className="divide-y divide-slate-200/70 dark:divide-slate-800/80 text-xs">
+                      <div className="py-3 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-200">
+                            Account Access Status
+                          </div>
+                          <div className="text-slate-500">
+                            Active vs suspended student accounts
+                          </div>
+                        </div>
+                        <div className="text-right font-mono tabular-nums">
+                          <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                            {stats.activeCount} active
+                          </span>{' '}
+                          ·{' '}
+                          <span className="text-red-600 dark:text-red-400 font-semibold">
+                            {stats.suspendedCount} suspended
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="py-3 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-200">
+                            Grading Scale Preference
+                          </div>
+                          <div className="text-slate-500">
+                            CGPA configuration split across registered students
+                          </div>
+                        </div>
+                        <div className="text-right font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                          {stats.bdScaleCount} BD (4.00) · {stats.usScaleCount} US (4.0)
+                        </div>
+                      </div>
+
+                      <div className="py-3 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-200">
+                            Syllabus &amp; Course Tracking
+                          </div>
+                          <div className="text-slate-500">
+                            Publicly synced courses and topic completion
+                          </div>
+                        </div>
+                        <div className="text-right font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                          {stats.totalTrackedCourses} courses · {stats.totalTopicsDone}/
+                          {stats.totalTopicsTracked} done
+                        </div>
+                      </div>
+
+                      <div className="py-3 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-200">
+                            Study Groups Utilization
+                          </div>
+                          <div className="text-slate-500">
+                            Total memberships and average group size
+                          </div>
+                        </div>
+                        <div className="text-right font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                          {stats.totalGroups} groups · {stats.totalGroupMemberships} seats (avg{' '}
+                          {stats.avgMembersPerGroup.toFixed(1)})
+                        </div>
+                      </div>
+
+                      <div className="py-3 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-200">
+                            Shared Notes &amp; Storage
+                          </div>
+                          <div className="text-slate-500">
+                            Breakdown by note type and total uploaded size
+                          </div>
+                        </div>
+                        <div className="text-right font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                          {stats.sharedTextCount} text · {stats.sharedFileCount} files (
+                          {(stats.sharedTotalBytes / (1024 * 1024)).toFixed(1)} MB)
+                        </div>
+                      </div>
+
+                      <div className="py-3 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-200">
+                            Feature Requests Pipeline
+                          </div>
+                          <div className="text-slate-500">
+                            Status distribution across {featureRequests.length} submissions
+                          </div>
+                        </div>
+                        <div className="text-right font-mono tabular-nums text-slate-700 dark:text-slate-300">
+                          {stats.openRequests} open · {stats.plannedRequests} planned ·{' '}
+                          {stats.shippedRequests} shipped · {stats.declinedRequests} declined
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1063,18 +1474,25 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                     <h2 className="text-base font-semibold mr-2">
                       Students &amp; Roles ({filteredUsers.length})
                     </h2>
-                    {(['all', 'active', 'suspended', 'admins'] as const).map((f) => (
+                    {(
+                      [
+                        { id: 'all', label: `All (${stats.totalUsers})` },
+                        { id: 'active', label: `Active (${stats.activeCount})` },
+                        { id: 'suspended', label: `Suspended (${stats.suspendedCount})` },
+                        { id: 'admins', label: `Admins (${stats.adminCount})` },
+                      ] as const
+                    ).map((f) => (
                       <button
-                        key={f}
+                        key={f.id}
                         type="button"
-                        onClick={() => setUserFilter(f)}
-                        className={`px-2.5 py-1 text-xs font-medium rounded-md capitalize ${
-                          userFilter === f
+                        onClick={() => setUserFilter(f.id)}
+                        className={`px-2.5 py-1 text-xs font-medium rounded-md tabular-nums ${
+                          userFilter === f.id
                             ? 'bg-blue-600 text-white'
                             : 'glass-subtle text-slate-600 dark:text-slate-300'
                         }`}
                       >
-                        {f}
+                        {f.label}
                       </button>
                     ))}
                   </div>
@@ -1101,15 +1519,71 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                   </div>
                 </div>
 
+                {/* Bulk Status Modification Toolbar */}
+                {selectedUids.length > 0 && (
+                  <div className="p-3.5 glass-subtle rounded-xl border border-blue-200 dark:border-blue-900/70 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-semibold text-blue-700 dark:text-blue-300 tabular-nums">
+                        {selectedUids.length} account(s) selected
+                      </span>
+                      <input
+                        type="text"
+                        maxLength={300}
+                        value={bulkReason}
+                        onChange={(e) => setBulkReason(e.target.value)}
+                        placeholder="Suspension reason (if suspending)..."
+                        className="w-full sm:w-64 px-2.5 py-1.5 text-xs bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={bulkBusy}
+                        onClick={() => handleBulkStatusApply(false)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-60"
+                      >
+                        <UserCheck className="w-3.5 h-3.5" />
+                        Set Active
+                      </button>
+                      <button
+                        type="button"
+                        disabled={bulkBusy}
+                        onClick={() => handleBulkStatusApply(true)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-60"
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        Suspend Selected
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedUids([])}
+                        className="px-2.5 py-1.5 text-xs font-medium glass-subtle rounded-lg"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead className="border-b border-slate-200 dark:border-slate-800 text-slate-500">
                       <tr>
+                        <th className="py-2.5 pr-3 w-8">
+                          <input
+                            type="checkbox"
+                            aria-label="Select all modifiable student accounts"
+                            checked={allVisibleSelected}
+                            disabled={modifiableVisibleUids.length === 0}
+                            onChange={toggleSelectAllVisible}
+                            className="rounded border-slate-300 dark:border-slate-700 text-blue-600"
+                          />
+                        </th>
                         <th className="py-2.5 pr-4">Student</th>
                         <th className="py-2.5 pr-4">Friend Code</th>
                         <th className="py-2.5 pr-4">Goal / Scale</th>
                         <th className="py-2.5 pr-4">Weekly Study</th>
-                        <th className="py-2.5 pr-4">Status</th>
+                        <th className="py-2.5 pr-4">Account Status</th>
                         <th className="py-2.5 text-right">Power Controls</th>
                       </tr>
                     </thead>
@@ -1119,21 +1593,36 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                         const isCore = isSuperAdminEmail(u.email);
                         const isDynAdmin = adminUidSet.has(u.uid);
                         const isSelf = u.uid === profile.uid;
+                        const canModifyStatus = !isCore && !isSelf;
+                        const isRowBusy = busyUid === u.uid || bulkBusy;
                         return (
-                          <tr key={u.uid}>
+                          <tr
+                            key={u.uid}
+                            className="hover:bg-slate-50/70 dark:hover:bg-slate-900/40 transition-colors"
+                          >
+                            <td className="py-3 pr-3 align-top">
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${u.displayName}`}
+                                disabled={!canModifyStatus}
+                                checked={canModifyStatus && selectedSet.has(u.uid)}
+                                onChange={() => toggleSelectOne(u.uid)}
+                                className="mt-1 rounded border-slate-300 dark:border-slate-700 text-blue-600 disabled:opacity-35"
+                              />
+                            </td>
                             <td className="py-3 pr-4">
                               <div className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-slate-100">
                                 <span>{u.displayName}</span>
                                 {(isCore || isDynAdmin) && (
-                                  <span className="px-1.5 py-0.5 text-[10px] font-mono bg-blue-100 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 rounded">
-                                    {isCore ? 'Owner Admin' : 'Admin'}
+                                  <span className="text-[11px] font-mono text-blue-600 dark:text-blue-400">
+                                    · {isCore ? 'Owner Admin' : 'Admin'}
                                   </span>
                                 )}
                               </div>
                               <div className="font-mono text-[11px] text-slate-500">{u.email}</div>
                             </td>
                             <td className="py-3 pr-4 font-mono">{u.friendCode}</td>
-                            <td className="py-3 pr-4 font-mono">
+                            <td className="py-3 pr-4 font-mono tabular-nums">
                               {Math.round((u.weeklyGoalMinutes || 600) / 60)}h ·{' '}
                               <span className="uppercase">{u.gradingScale}</span>
                             </td>
@@ -1141,21 +1630,54 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                               {((pub?.weeklyMinutes || 0) / 60).toFixed(1)}h · {pub?.streakDays || 0}d
                             </td>
                             <td className="py-3 pr-4">
-                              {u.suspended ? (
-                                <div>
-                                  <span className="text-red-600 dark:text-red-400 font-semibold">
-                                    Suspended
-                                  </span>
-                                  {u.suspendedReason && (
-                                    <div className="text-[11px] text-slate-500 max-w-[180px] truncate">
-                                      {u.suspendedReason}
+                              {canModifyStatus ? (
+                                <div className="space-y-1">
+                                  <select
+                                    aria-label={`Account status for ${u.email}`}
+                                    disabled={isRowBusy}
+                                    value={u.suspended ? 'suspended' : 'active'}
+                                    onChange={(e) =>
+                                      void handleDirectStatusChange(
+                                        u,
+                                        e.target.value === 'suspended'
+                                      )
+                                    }
+                                    className={`px-2.5 py-1 text-xs font-semibold rounded-md border bg-white dark:bg-slate-950 transition-colors disabled:opacity-60 ${
+                                      u.suspended
+                                        ? 'border-red-300 dark:border-red-800 text-red-700 dark:text-red-400'
+                                        : 'border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400'
+                                    }`}
+                                  >
+                                    <option value="active">Active</option>
+                                    <option value="suspended">Suspended</option>
+                                  </select>
+                                  {u.suspended && (
+                                    <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                                      <span className="max-w-[140px] truncate">
+                                        {u.suspendedReason || 'No reason set'}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setSuspendTarget(u);
+                                          setSuspendReason(
+                                            u.suspendedReason || 'Suspended by site administrator.'
+                                          );
+                                        }}
+                                        className="text-blue-600 dark:text-blue-400 hover:underline shrink-0"
+                                      >
+                                        Edit reason
+                                      </button>
                                     </div>
                                   )}
                                 </div>
                               ) : (
-                                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-                                  Active
-                                </span>
+                                <div className="text-xs">
+                                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                                    Active
+                                  </span>
+                                  <span className="text-slate-400"> · Protected</span>
+                                </div>
                               )}
                             </td>
                             <td className="py-3 text-right">
@@ -1174,11 +1696,11 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                                   <Edit3 className="w-3 h-3" /> Edit
                                 </button>
 
-                                {!isCore && !isSelf && (
+                                {canModifyStatus && (
                                   <>
                                     <button
                                       type="button"
-                                      disabled={busyUid === u.uid}
+                                      disabled={isRowBusy}
                                       onClick={() => void handleToggleAdminRole(u)}
                                       className={`inline-flex items-center gap-1 px-2 py-1 rounded-md font-medium ${
                                         isDynAdmin
@@ -1201,7 +1723,7 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                                     {u.suspended ? (
                                       <button
                                         type="button"
-                                        disabled={busyUid === u.uid}
+                                        disabled={isRowBusy}
                                         onClick={() => void handleRestoreUser(u)}
                                         className="inline-flex items-center gap-1 px-2 py-1 rounded-md font-medium bg-emerald-600 text-white hover:bg-emerald-700"
                                       >
@@ -1210,7 +1732,7 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                                     ) : (
                                       <button
                                         type="button"
-                                        disabled={busyUid === u.uid}
+                                        disabled={isRowBusy}
                                         onClick={() => {
                                           setSuspendTarget(u);
                                           setSuspendReason('Suspended by site administrator.');
@@ -1223,7 +1745,7 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
 
                                     <button
                                       type="button"
-                                      disabled={busyUid === u.uid}
+                                      disabled={isRowBusy}
                                       onClick={() =>
                                         setConfirmState({
                                           open: true,
@@ -1241,6 +1763,9 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                                             setPublicProfiles((prev) =>
                                               prev.filter((item) => item.uid !== u.uid)
                                             );
+                                            setSelectedUids((prev) =>
+                                              prev.filter((id) => id !== u.uid)
+                                            );
                                             onNotify(`Removed student record for ${u.email}.`);
                                           },
                                         })
@@ -1257,6 +1782,13 @@ export const AdminControlPanel: React.FC<AdminControlPanelProps> = ({
                           </tr>
                         );
                       })}
+                      {filteredUsers.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="py-8 text-center text-xs text-slate-500">
+                            No student accounts match the current filter or search query.
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>

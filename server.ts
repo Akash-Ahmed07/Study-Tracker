@@ -1,7 +1,9 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
+import { spawn } from 'child_process';
 import multer from 'multer';
 import dotenv from 'dotenv';
 import { initializeApp, getApps } from 'firebase-admin/app';
@@ -107,10 +109,117 @@ function pairDocId(uid1: string, uid2: string): string {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '10mb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, maxFileSizeBytes: MAX_FILE_SIZE_BYTES });
+  });
+
+  // Generate multi-page Weekly Performance & CGPA 4.00 PDF via Python + Seaborn
+  app.post('/api/reports/weekly-pdf', requireAuth, async (req: AuthRequest, res: Response) => {
+    const uid = req.user?.uid;
+    if (!uid) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const scriptPath = path.resolve(process.cwd(), 'scripts', 'generate_weekly_report.py');
+    if (!fs.existsSync(scriptPath)) {
+      res.status(500).json({ error: 'Report generator script is missing on server.' });
+      return;
+    }
+
+    const tmpPdfPath = path.join(os.tmpdir(), `studytracker_report_${crypto.randomUUID()}.pdf`);
+
+    try {
+      const bodyPayload =
+        req.body && typeof req.body === 'object' ? { ...req.body } : {};
+      const incomingProfile =
+        bodyPayload.profile && typeof bodyPayload.profile === 'object'
+          ? { ...bodyPayload.profile }
+          : {};
+      bodyPayload.profile = {
+        ...incomingProfile,
+        uid,
+        email: incomingProfile.email || req.user?.email || '',
+      };
+
+      const serialized = JSON.stringify(bodyPayload);
+
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn('python3', [scriptPath, tmpPdfPath], {
+          env: {
+            ...process.env,
+            MPLCONFIGDIR: '/tmp/matplotlib',
+          },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        let stderr = '';
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            child.kill('SIGKILL');
+            reject(new Error('PDF generation timed out.'));
+          }
+        }, 30000);
+
+        child.stderr.on('data', (chunk) => {
+          stderr += String(chunk);
+        });
+
+        child.on('error', (err) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(err);
+          }
+        });
+
+        child.on('close', (code) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            if (code === 0) {
+              resolve();
+            } else {
+              reject(new Error(stderr.trim() || `Python exited with code ${code}`));
+            }
+          }
+        });
+
+        child.stdin.on('error', () => {
+          // Ignore broken pipe if child closes early; close handler catches exit code
+        });
+        child.stdin.write(serialized, 'utf8');
+        child.stdin.end();
+      });
+
+      if (!fs.existsSync(tmpPdfPath)) {
+        res.status(500).json({ error: 'PDF output file was not created.' });
+        return;
+      }
+
+      const pdfBuffer = await fs.promises.readFile(tmpPdfPath);
+      const dateTag = new Date().toISOString().slice(0, 10);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="StudyTracker_Weekly_Performance_${dateTag}.pdf"`
+      );
+      res.setHeader('Content-Length', String(pdfBuffer.length));
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error('Weekly Seaborn PDF generation error:', error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Failed to generate Seaborn PDF.',
+      });
+    } finally {
+      if (fs.existsSync(tmpPdfPath)) {
+        await fs.promises.unlink(tmpPdfPath).catch(() => {});
+      }
+    }
   });
 
   // Upload a course file (max 100 MB) into STUDYTRACKER_FILES/<uid>/

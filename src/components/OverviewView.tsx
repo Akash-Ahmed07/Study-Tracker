@@ -30,6 +30,7 @@ import {
 } from '../lib/types.ts';
 import { GmailMessageSummary, listRecentStudyEmails } from '../lib/workspace.ts';
 import { BubbleVibeMode } from './AmbientBubbles.tsx';
+import { FuturisticTelemetryPanel } from './FuturisticTelemetryPanel.tsx';
 import { StudyOverviewCharts } from './StudyCharts.tsx';
 
 interface OverviewViewProps {
@@ -57,6 +58,7 @@ interface OverviewViewProps {
   onOpenFocusZoom: () => void;
   onStartCourseRecoveryFocus: (courseId: string) => void;
   onNavigate: (section: NavSection) => void;
+  onNotify?: (msg: string) => void;
 }
 
 function formatDurationClock(totalSeconds: number): string {
@@ -103,6 +105,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onOpenFocusZoom,
   onStartCourseRecoveryFocus,
   onNavigate,
+  onNotify,
 }) => {
   const [emails, setEmails] = useState<GmailMessageSummary[]>([]);
   const [loadingEmails, setLoadingEmails] = useState(false);
@@ -257,17 +260,28 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
         <div className="glass-panel rounded-xl p-5">
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Private CGPA ({profile.gradingScale === 'bd' ? 'BD 4.00' : 'US 4.0'})</span>
+            <span>Private CGPA ({profile.gradingScale === 'bd' ? 'BD 4.00' : 'US 4.00'})</span>
             <Calculator className="w-4 h-4 text-slate-400" />
           </div>
           <div className="mt-2 font-mono text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-            {gpaReport.completedCredits > 0 ? gpaReport.cgpa.toFixed(2) : '—'}
+            {gpaReport.completedCredits > 0 ? `${gpaReport.cgpa.toFixed(2)} / 4.00` : '— / 4.00'}
           </div>
           <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 tabular-nums">
             {gpaReport.completedCredits} credits graded · Hidden from friends
           </div>
         </div>
       </div>
+
+      {/* Futuristic Academic Telemetry & Python Seaborn PDF Studio */}
+      <FuturisticTelemetryPanel
+        profile={profile}
+        courses={courses}
+        topics={topics}
+        sessions={sessions}
+        notes={notes}
+        onNavigate={onNavigate}
+        onNotify={onNotify}
+      />
 
       {/* Focus Atmosphere Bar (Realistic Glass Bubbles + Soundscape) */}
       <div className="glass-panel rounded-xl px-5 py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
