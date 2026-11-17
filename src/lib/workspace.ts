@@ -89,6 +89,196 @@ export async function downloadDriveFileAsFile(
   return new File([blob], targetName, { type: targetMime });
 }
 
+export async function getOrCreateStudyTrackerDriveFolder(
+  accessToken: string
+): Promise<string> {
+  const q = encodeURIComponent(
+    "name = 'Study Tracker Uploads' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+  );
+  const searchRes = await workspaceFetch(
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=5`,
+    accessToken
+  );
+  const found = (await searchRes.json()) as { files?: { id: string }[] };
+  if (found.files?.[0]?.id) {
+    return found.files[0].id;
+  }
+
+  const createRes = await workspaceFetch(
+    'https://www.googleapis.com/drive/v3/files?fields=id',
+    accessToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Study Tracker Uploads',
+        mimeType: 'application/vnd.google-apps.folder',
+      }),
+    }
+  );
+  const created = (await createRes.json()) as { id: string };
+  return created.id;
+}
+
+export async function setDriveFileAnyoneReader(
+  accessToken: string,
+  fileId: string
+): Promise<void> {
+  if (!fileId) return;
+  try {
+    await workspaceFetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`,
+      accessToken,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: 'reader',
+          type: 'anyone',
+        }),
+      }
+    );
+  } catch (err) {
+    console.warn('Could not update Drive file share permission:', err);
+  }
+}
+
+export async function uploadFileToDriveResumable(
+  accessToken: string,
+  file: File,
+  options?: {
+    shareAnyone?: boolean;
+    onProgress?: (percent: number) => void;
+  }
+): Promise<{ id: string; webViewLink?: string }> {
+  const mimeType = file.type || 'application/octet-stream';
+  let folderId = '';
+  try {
+    folderId = await getOrCreateStudyTrackerDriveFolder(accessToken);
+  } catch {
+    folderId = '';
+  }
+
+  const metadata: Record<string, unknown> = {
+    name: file.name,
+    mimeType,
+  };
+  if (folderId) {
+    metadata.parents = [folderId];
+  }
+
+  const initRes = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,webViewLink',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Type': mimeType,
+        'X-Upload-Content-Length': String(file.size),
+      },
+      body: JSON.stringify(metadata),
+    }
+  );
+
+  if (!initRes.ok) {
+    const errText = await initRes.text();
+    throw new Error(`Google Drive upload start failed (${initRes.status}): ${errText.slice(0, 200)}`);
+  }
+
+  const uploadUrl = initRes.headers.get('Location');
+  if (!uploadUrl) {
+    throw new Error('Google Drive did not return a resumable upload session URL.');
+  }
+
+  options?.onProgress?.(0);
+
+  if (file.size === 0) {
+    const emptyRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': mimeType },
+      body: file,
+    });
+    if (!emptyRes.ok) {
+      throw new Error(`Drive upload failed (${emptyRes.status})`);
+    }
+    const created = (await emptyRes.json()) as { id: string; webViewLink?: string };
+    options?.onProgress?.(100);
+    if (options?.shareAnyone) {
+      await setDriveFileAnyoneReader(accessToken, created.id);
+    }
+    return created;
+  }
+
+  // Upload in 8 MB chunks so files 1 GB - 2 GB stream cleanly without excessive memory usage
+  const CHUNK_SIZE = 8 * 1024 * 1024;
+  let offset = 0;
+  let result: { id: string; webViewLink?: string } | null = null;
+
+  while (offset < file.size) {
+    const end = Math.min(offset + CHUNK_SIZE, file.size);
+    const chunk = file.slice(offset, end);
+
+    const chunkRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': mimeType,
+        'Content-Range': `bytes ${offset}-${end - 1}/${file.size}`,
+      },
+      body: chunk,
+    });
+
+    if (chunkRes.status === 308) {
+      offset = end;
+      options?.onProgress?.(Math.min(99, Math.round((end / file.size) * 100)));
+      continue;
+    }
+
+    if (!chunkRes.ok) {
+      const errText = await chunkRes.text();
+      throw new Error(`Drive chunk upload failed (${chunkRes.status}): ${errText.slice(0, 200)}`);
+    }
+
+    result = (await chunkRes.json()) as { id: string; webViewLink?: string };
+    offset = end;
+    options?.onProgress?.(100);
+    break;
+  }
+
+  if (!result?.id) {
+    throw new Error('Google Drive upload completed without returning a file ID.');
+  }
+
+  if (options?.shareAnyone) {
+    await setDriveFileAnyoneReader(accessToken, result.id);
+  }
+
+  return result;
+}
+
+export async function fetchDriveFileBlobUrl(
+  accessToken: string,
+  driveFileId: string,
+  mimeType?: string
+): Promise<string> {
+  const res = await workspaceFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(driveFileId)}?alt=media`,
+    accessToken
+  );
+  const rawBlob = await res.blob();
+  const typedBlob =
+    mimeType && rawBlob.type !== mimeType ? new Blob([rawBlob], { type: mimeType }) : rawBlob;
+  return URL.createObjectURL(typedBlob);
+}
+
+export function getDrivePreviewEmbedUrl(driveFileId: string): string {
+  return `https://drive.google.com/file/d/${encodeURIComponent(driveFileId)}/preview`;
+}
+
+export function getDriveDirectDownloadUrl(driveFileId: string): string {
+  return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(driveFileId)}`;
+}
+
 export async function exportBlobToDrive(
   accessToken: string,
   filename: string,

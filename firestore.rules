@@ -52,7 +52,7 @@ service cloud.firestore {
     // Entity validators
     function isValidUserProfile(data, userId) {
       return data.keys().hasAll(['uid', 'displayName', 'email', 'gradingScale', 'weeklyGoalMinutes', 'friendCode', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'email', 'gradingScale', 'weeklyGoalMinutes', 'friendCode', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'gradingScale', 'weeklyGoalMinutes', 'friendCode', 'priorCgpa', 'priorCredits', 'createdAt', 'updatedAt'])
         && data.uid == userId
         && data.uid == request.auth.uid
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
@@ -60,13 +60,15 @@ service cloud.firestore {
         && data.gradingScale in ['bd', 'us']
         && data.weeklyGoalMinutes is number && data.weeklyGoalMinutes >= 30 && data.weeklyGoalMinutes <= 10080
         && data.friendCode is string && data.friendCode.size() >= 4 && data.friendCode.size() <= 24 && data.friendCode.matches('^[A-Z0-9\\-]+$')
+        && (!('priorCgpa' in data) || (data.priorCgpa is number && data.priorCgpa >= 0 && data.priorCgpa <= 4))
+        && (!('priorCredits' in data) || (data.priorCredits is number && data.priorCredits >= 0 && data.priorCredits <= 400))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
     function isValidCourse(data, userId) {
       return data.keys().hasAll(['userId', 'code', 'title', 'semester', 'credits', 'gradeLetter', 'isCompleted', 'color', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['userId', 'code', 'title', 'semester', 'credits', 'gradeLetter', 'isCompleted', 'color', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'code', 'title', 'semester', 'credits', 'gradeLetter', 'isCompleted', 'color', 'midtermScore', 'midtermMax', 'createdAt', 'updatedAt'])
         && data.userId == userId
         && data.userId == request.auth.uid
         && data.code is string && data.code.size() >= 1 && data.code.size() <= 32
@@ -76,6 +78,8 @@ service cloud.firestore {
         && data.gradeLetter is string && data.gradeLetter.size() <= 8
         && data.isCompleted is bool
         && data.color is string && data.color.size() >= 1 && data.color.size() <= 24
+        && (!('midtermScore' in data) || (data.midtermScore is number && data.midtermScore >= 0 && data.midtermScore <= 1000))
+        && (!('midtermMax' in data) || (data.midtermMax is number && data.midtermMax >= 0 && data.midtermMax <= 1000))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -126,7 +130,7 @@ service cloud.firestore {
         && data.textContent is string && data.textContent.size() <= 50000
         && data.originalFilename is string && data.originalFilename.size() <= 240
         && data.mimeType is string && data.mimeType.size() <= 120
-        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 104857600
+        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 2147483648
         && data.storageKey is string && data.storageKey.size() <= 240
         && data.isShared is bool
         && data.driveFileId is string && data.driveFileId.size() <= 128
@@ -213,7 +217,7 @@ service cloud.firestore {
 
     function isValidSharedNote(data) {
       return data.keys().hasAll(['ownerUid', 'ownerName', 'sourceNoteId', 'courseCode', 'title', 'kind', 'textContent', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'allowedFriendUids', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerUid', 'ownerName', 'sourceNoteId', 'courseCode', 'title', 'kind', 'textContent', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'allowedFriendUids', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerUid', 'ownerName', 'sourceNoteId', 'courseCode', 'title', 'kind', 'textContent', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'driveFileId', 'allowedFriendUids', 'createdAt', 'updatedAt'])
         && data.ownerUid == request.auth.uid
         && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 100
         && isValidId(data.sourceNoteId)
@@ -223,8 +227,9 @@ service cloud.firestore {
         && data.textContent is string && data.textContent.size() <= 50000
         && data.originalFilename is string && data.originalFilename.size() <= 240
         && data.mimeType is string && data.mimeType.size() <= 120
-        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 104857600
+        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 2147483648
         && data.storageKey is string && data.storageKey.size() <= 240
+        && (!('driveFileId' in data) || (data.driveFileId is string && data.driveFileId.size() <= 128))
         && data.allowedFriendUids is list && data.allowedFriendUids.size() <= 25
         && (data.allowedFriendUids.size() == 0 || data.allowedFriendUids[0] is string)
         && data.createdAt is timestamp
@@ -284,7 +289,7 @@ service cloud.firestore {
 
     function isValidStudyGroupMessage(data, groupId) {
       return data.keys().hasAll(['groupId', 'senderUid', 'senderName', 'kind', 'text', 'noteTitle', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'sourceNoteId', 'createdAt'])
-        && data.keys().hasOnly(['groupId', 'senderUid', 'senderName', 'kind', 'text', 'noteTitle', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'sourceNoteId', 'createdAt'])
+        && data.keys().hasOnly(['groupId', 'senderUid', 'senderName', 'kind', 'text', 'noteTitle', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'driveFileId', 'sourceNoteId', 'createdAt'])
         && data.groupId == groupId
         && isValidId(data.senderUid)
         && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 100
@@ -293,8 +298,9 @@ service cloud.firestore {
         && data.noteTitle is string && data.noteTitle.size() <= 160
         && data.originalFilename is string && data.originalFilename.size() <= 240
         && data.mimeType is string && data.mimeType.size() <= 120
-        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 104857600
+        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 2147483648
         && data.storageKey is string && data.storageKey.size() <= 240
+        && (!('driveFileId' in data) || (data.driveFileId is string && data.driveFileId.size() <= 128))
         && data.sourceNoteId is string && data.sourceNoteId.size() <= 128
         && data.createdAt is timestamp;
     }
@@ -328,7 +334,7 @@ service cloud.firestore {
         && incoming().friendCode == existing().friendCode
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'gradingScale', 'weeklyGoalMinutes', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'gradingScale', 'weeklyGoalMinutes', 'priorCgpa', 'priorCredits', 'updatedAt']);
       allow delete: if false;
 
       match /courses/{courseId} {
@@ -343,7 +349,7 @@ service cloud.firestore {
           && incoming().userId == existing().userId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
-          && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'title', 'semester', 'credits', 'gradeLetter', 'isCompleted', 'color', 'updatedAt']);
+          && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'title', 'semester', 'credits', 'gradeLetter', 'isCompleted', 'color', 'midtermScore', 'midtermMax', 'updatedAt']);
         allow delete: if isVerified() && isValidId(userId) && isValidId(courseId) && isOwner(userId);
       }
 
@@ -506,7 +512,7 @@ service cloud.firestore {
             && request.auth.uid in incoming().participantUids
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'participantUids', 'updatedAt']))
           ||
-          (existing().hostUid == request.auth.uid
+          ((existing().hostUid == request.auth.uid || (existing().status == 'active' && request.auth.uid in existing().participantUids))
             && incoming().status == 'completed'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'durationMinutes', 'updatedAt']))
         );
@@ -532,7 +538,7 @@ service cloud.firestore {
         && incoming().sourceNoteId == existing().sourceNoteId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['courseCode', 'title', 'textContent', 'allowedFriendUids', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['courseCode', 'title', 'textContent', 'driveFileId', 'allowedFriendUids', 'updatedAt']);
       allow delete: if isVerified() && isValidId(sharedNoteId) && existing().ownerUid == request.auth.uid;
     }
 

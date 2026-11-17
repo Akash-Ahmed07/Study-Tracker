@@ -61,17 +61,28 @@ export interface GpaReport {
   cgpa: number;
   completedCredits: number;
   totalQualityPoints: number;
+  priorCredits: number;
+  priorCgpa: number;
   semesters: SemesterGpaSummary[];
+}
+
+export interface PriorAcademicSummary {
+  priorCgpa?: number;
+  priorCredits?: number;
 }
 
 export function computeGpaReport(
   courses: Course[],
   scale: GradingScale,
-  whatIfOverrides?: Record<string, string>
+  whatIfOverrides?: Record<string, string>,
+  priorSummary?: PriorAcademicSummary
 ): GpaReport {
   const semesterMap = new Map<string, { credits: number; qualityPoints: number; courses: Course[] }>();
-  let totalCredits = 0;
-  let totalQualityPoints = 0;
+  const priorCredits = Math.max(0, Number(priorSummary?.priorCredits) || 0);
+  const priorCgpa = Math.max(0, Math.min(4.0, Number(priorSummary?.priorCgpa) || 0));
+
+  let totalCredits = priorCredits;
+  let totalQualityPoints = priorCredits * priorCgpa;
 
   for (const course of courses) {
     const effectiveLetter = whatIfOverrides?.[course.id] ?? course.gradeLetter;
@@ -103,6 +114,8 @@ export function computeGpaReport(
     cgpa: totalCredits > 0 ? totalQualityPoints / totalCredits : 0,
     completedCredits: totalCredits,
     totalQualityPoints,
+    priorCredits,
+    priorCgpa,
     semesters,
   };
 }
@@ -123,4 +136,23 @@ export function computeRequiredGpa(
     requiredGpa: needed,
     feasible: needed <= 4.0,
   };
+}
+
+export function getMidtermPercent(course: Course): number | null {
+  if (
+    typeof course.midtermMax !== 'number' ||
+    typeof course.midtermScore !== 'number' ||
+    course.midtermMax <= 0
+  ) {
+    return null;
+  }
+  return Math.round((course.midtermScore / course.midtermMax) * 100);
+}
+
+export function getLowMidtermCourses(courses: Course[], thresholdPercent = 60): Course[] {
+  return courses.filter((c) => {
+    if (c.isCompleted) return false;
+    const pct = getMidtermPercent(c);
+    return pct !== null && pct < thresholdPercent;
+  });
 }

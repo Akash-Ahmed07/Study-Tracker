@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Download, Flame, HeartHandshake, Pause, Play, Plus, Square, Target, Trash2 } from 'lucide-react';
+import { Download, Flame, HeartHandshake, Maximize2, Pause, Play, Plus, Square, Target, Trash2 } from 'lucide-react';
 import {
   computeStreakDays,
   computeWeeklyMinutes,
@@ -28,6 +28,7 @@ interface SessionsViewProps {
   onPauseTimer: () => void;
   onStopAndSaveTimer: (note: string) => Promise<void>;
   onResetTimer: () => void;
+  onOpenFocusZoom: () => void;
   onNotify: (msg: string) => void;
 }
 
@@ -54,6 +55,7 @@ export const SessionsView: React.FC<SessionsViewProps> = ({
   onPauseTimer,
   onStopAndSaveTimer,
   onResetTimer,
+  onOpenFocusZoom,
   onNotify,
 }) => {
   const [timerNote, setTimerNote] = useState('');
@@ -247,7 +249,7 @@ export const SessionsView: React.FC<SessionsViewProps> = ({
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {!timerRunning ? (
                 <button
                   type="button"
@@ -267,6 +269,14 @@ export const SessionsView: React.FC<SessionsViewProps> = ({
                   Pause
                 </button>
               )}
+              <button
+                type="button"
+                onClick={onOpenFocusZoom}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-blue-700 dark:text-blue-300 glass-subtle hover:bg-white/80 dark:hover:bg-slate-800 rounded-lg whitespace-nowrap"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                Zoom + Reader
+              </button>
               {timerSeconds > 0 && (
                 <>
                   <button
@@ -278,7 +288,7 @@ export const SessionsView: React.FC<SessionsViewProps> = ({
                     className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
                   >
                     <Square className="w-4 h-4" />
-                    Stop & Log
+                    Stop &amp; Log
                   </button>
                   <button
                     type="button"

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
   BookOpen,
   Calculator,
@@ -9,13 +10,14 @@ import {
   FileText,
   Flame,
   Mail,
+  Maximize2,
   Play,
   RefreshCw,
   Square,
   Users,
   Volume2,
 } from 'lucide-react';
-import { computeGpaReport } from '../lib/gpa.ts';
+import { computeGpaReport, getLowMidtermCourses, getMidtermPercent } from '../lib/gpa.ts';
 import { SoundscapeType } from '../lib/soundscape.ts';
 import { computeStreakDays, computeWeeklyMinutes } from '../lib/studyData.ts';
 import {
@@ -51,6 +53,8 @@ interface OverviewViewProps {
   onReconnectWorkspace: () => void;
   onStartQuickTimer: () => void;
   onStopAndSaveTimer: () => void;
+  onOpenFocusZoom: () => void;
+  onStartCourseRecoveryFocus: (courseId: string) => void;
   onNavigate: (section: NavSection) => void;
 }
 
@@ -94,6 +98,8 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onReconnectWorkspace,
   onStartQuickTimer,
   onStopAndSaveTimer,
+  onOpenFocusZoom,
+  onStartCourseRecoveryFocus,
   onNavigate,
 }) => {
   const [emails, setEmails] = useState<GmailMessageSummary[]>([]);
@@ -104,7 +110,11 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   const streakDays = computeStreakDays(sessions);
   const goalMinutes = profile.weeklyGoalMinutes || 600;
   const goalPercent = Math.min(100, Math.round((weeklyMinutes / goalMinutes) * 100));
-  const gpaReport = computeGpaReport(courses, profile.gradingScale);
+  const gpaReport = computeGpaReport(courses, profile.gradingScale, undefined, {
+    priorCgpa: profile.priorCgpa,
+    priorCredits: profile.priorCredits,
+  });
+  const lowMidCourses = useMemo(() => getLowMidtermCourses(courses), [courses]);
 
   const activeTopics = topics.filter((t) => t.status !== 'done').slice(0, 5);
   const doneTopicsCount = topics.filter((t) => t.status === 'done').length;
@@ -155,6 +165,34 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           </button>
         )}
       </div>
+
+      {/* Low Midterm Persistent Study Reminder */}
+      {lowMidCourses.length > 0 && (
+        <div className="glass-panel border border-amber-300/80 dark:border-amber-700/70 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                Midterm Recovery Reminder — Keep Studying Daily
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                {lowMidCourses
+                  .map((c) => `${c.code} (${c.midtermScore}/${c.midtermMax} · ${getMidtermPercent(c)}%)`)
+                  .join(', ')}{' '}
+                scored below 60% in midterm. Extra daily sessions will help pull up your final grade.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onStartCourseRecoveryFocus(lowMidCourses[0].id)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg whitespace-nowrap shrink-0"
+          >
+            <Play className="w-3.5 h-3.5" />
+            Study {lowMidCourses[0].code} Now
+          </button>
+        </div>
+      )}
 
       {/* 4-Column Metric Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -319,7 +357,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             {!timerRunning ? (
               <button
                 type="button"
@@ -336,15 +374,23 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                 className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors whitespace-nowrap"
               >
                 <Square className="w-4 h-4" />
-                Finish & Log Session
+                Finish &amp; Log
               </button>
             )}
             <button
               type="button"
-              onClick={() => onNavigate('sessions')}
-              className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors whitespace-nowrap"
+              onClick={onOpenFocusZoom}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium text-blue-700 dark:text-blue-300 glass-subtle hover:bg-white/80 dark:hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap"
             >
-              Manage Sessions
+              <Maximize2 className="w-3.5 h-3.5" />
+              Zoom + Notes
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('sessions')}
+              className="px-3.5 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors whitespace-nowrap"
+            >
+              Sessions
             </button>
           </div>
         </div>

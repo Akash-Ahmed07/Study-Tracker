@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Analytics } from '@vercel/analytics/react';
 import {
+  AlertTriangle,
   BookOpen,
   Calculator,
   Clock,
@@ -8,6 +9,7 @@ import {
   FileText,
   LayoutDashboard,
   LogOut,
+  Maximize2,
   Menu,
   MessageSquarePlus,
   Moon,
@@ -31,12 +33,14 @@ import { CommandPalette } from './components/CommandPalette.tsx';
 import { CoursesView } from './components/CoursesView.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { FeatureRequestsView } from './components/FeatureRequestsView.tsx';
+import { FocusZoomModal } from './components/FocusZoomModal.tsx';
 import { FriendsView } from './components/FriendsView.tsx';
 import { LegalDocMode, LegalPage } from './components/LegalPage.tsx';
 import { NotesFilesView } from './components/NotesFilesView.tsx';
 import { OverviewView } from './components/OverviewView.tsx';
 import { SessionsView, TimerPreset } from './components/SessionsView.tsx';
 import { SignInView } from './components/SignInView.tsx';
+import { getLowMidtermCourses, getMidtermPercent } from './lib/gpa.ts';
 import { soundEngine, SoundscapeType } from './lib/soundscape.ts';
 import {
   connectGoogleWorkspace,
@@ -142,9 +146,33 @@ function StudyTrackerWorkspace() {
   const [activeSection, setActiveSection] = useState<NavSection>('overview');
   const [notesComposeMode, setNotesComposeMode] = useState<'upload' | 'text' | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem('studytracker_sidebar') === '1';
+    } catch {
+      return false;
+    }
+  });
   const [commandOpen, setCommandOpen] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
-  const [bubbleMode, setBubbleMode] = useState<BubbleVibeMode>('subtle');
+  const [focusZoomOpen, setFocusZoomOpen] = useState(false);
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem('studytracker_theme') === 'dark';
+    } catch {
+      return false;
+    }
+  });
+  const [bubbleMode, setBubbleMode] = useState<BubbleVibeMode>(() => {
+    if (typeof window === 'undefined') return 'subtle';
+    try {
+      const saved = window.localStorage.getItem('studytracker_bubbles');
+      return saved === 'off' || saved === 'lively' ? saved : 'subtle';
+    } catch {
+      return 'subtle';
+    }
+  });
   const [soundscape, setSoundscape] = useState<SoundscapeType>('off');
   const [soundVolume, setSoundVolume] = useState(0.25);
   const [toast, setToast] = useState<string | null>(null);
@@ -177,14 +205,35 @@ function StudyTrackerWorkspace() {
     }
   }, []);
 
-  // Sync dark mode class on <html>
+  // Sync & persist theme, bubbles, and sidebar state across refreshes
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
     }
+    try {
+      window.localStorage.setItem('studytracker_theme', darkMode ? 'dark' : 'light');
+    } catch {
+      // Ignore storage errors
+    }
   }, [darkMode]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('studytracker_bubbles', bubbleMode);
+    } catch {
+      // Ignore
+    }
+  }, [bubbleMode]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('studytracker_sidebar', sidebarCollapsed ? '1' : '0');
+    } catch {
+      // Ignore
+    }
+  }, [sidebarCollapsed]);
 
   // Global keyboard shortcuts (Cmd/Ctrl+K or "/" when not in an input)
   useEffect(() => {
@@ -574,6 +623,17 @@ function StudyTrackerWorkspace() {
       setTimerStartedIso(new Date().toISOString());
     }
     setTimerRunning(true);
+    setFocusZoomOpen(true);
+  };
+
+  const handleStartCourseRecoveryFocus = (courseId: string) => {
+    setTimerCourseId(courseId);
+    setTimerTopicId('');
+    if (!timerStartedIso) {
+      setTimerStartedIso(new Date().toISOString());
+    }
+    setTimerRunning(true);
+    setFocusZoomOpen(true);
   };
 
   const handleStopAndSaveTimer = async (noteText = '') => {
@@ -604,6 +664,8 @@ function StudyTrackerWorkspace() {
     setTimerStartedIso(null);
   };
 
+  const lowMidCourses = useMemo(() => getLowMidtermCourses(courses), [courses]);
+
   if (legalMode) {
     return (
       <LegalPage
@@ -629,6 +691,8 @@ function StudyTrackerWorkspace() {
         isSigningIn={isSigningIn}
         errorMessage={authError}
         pendingInviteCode={pendingInviteCode}
+        darkMode={darkMode}
+        onToggleDarkMode={() => setDarkMode((v) => !v)}
         onOpenLegal={(m) => openLegalPage(m)}
       />
     );
@@ -641,13 +705,26 @@ function StudyTrackerWorkspace() {
     <div className="min-h-screen bg-gradient-to-br from-slate-100 via-blue-50/40 to-slate-200 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 text-slate-900 dark:text-slate-100 flex relative overflow-x-hidden">
       <AmbientBubbles mode={bubbleMode} darkMode={darkMode} />
 
-      {/* Desktop Sidebar (256px) */}
-      <aside className="hidden lg:flex w-64 shrink-0 flex-col justify-between glass-panel border-r border-white/50 dark:border-slate-800/80 rounded-none relative z-10">
+      {/* Desktop Sidebar (256px, collapsible) */}
+      <aside
+        className={`hidden ${
+          sidebarCollapsed ? 'lg:hidden' : 'lg:flex'
+        } w-64 shrink-0 flex-col justify-between glass-panel border-r border-white/50 dark:border-slate-800/80 rounded-none relative z-10`}
+      >
         <div className="p-5 space-y-6">
-          <div className="px-2 py-1">
+          <div className="px-2 py-1 flex items-center justify-between gap-2">
             <span className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-slate-50 whitespace-nowrap">
               Study Tracker
             </span>
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(true)}
+              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-md"
+              aria-label="Close sidebar menu"
+              title="Close menu"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
           <nav className="space-y-1" aria-label="Main menu">
@@ -755,35 +832,51 @@ function StudyTrackerWorkspace() {
 
       {/* Main Content Shell */}
       <div className="flex-1 flex flex-col min-w-0 relative z-10">
-        {/* Clean 3-Zone Top Bar */}
-        <header className="h-16 glass-panel border-b border-white/50 dark:border-slate-800/80 rounded-none px-6 flex items-center justify-between gap-8 shrink-0">
+        {/* Top Bar with Menu Open/Close & Quick Command on Right */}
+        <header className="h-16 glass-panel border-b border-white/50 dark:border-slate-800/80 rounded-none px-6 flex items-center justify-between gap-4 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-slate-100"
+              className="lg:hidden p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 rounded-lg"
               aria-label="Open navigation menu"
             >
               <Menu className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              className="hidden lg:inline-flex p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 glass-subtle rounded-lg"
+              aria-label={sidebarCollapsed ? 'Open navigation menu' : 'Close navigation menu'}
+              title={sidebarCollapsed ? 'Open Menu' : 'Close Menu'}
+            >
+              <Menu className="w-4 h-4" />
             </button>
             <span className="text-sm font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap truncate">
               Study Tracker / {activeNavItem.num}. {activeNavItem.label}
             </span>
           </div>
 
-          <div className="hidden md:flex items-center">
+          <div className="flex items-center gap-2.5 shrink-0">
+            {(timerRunning || timerSeconds > 0) && (
+              <button
+                type="button"
+                onClick={() => setFocusZoomOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono font-semibold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/70 border border-blue-200 dark:border-blue-800 rounded-lg whitespace-nowrap shrink-0 tabular-nums"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                {Math.floor(timerSeconds / 60)}m · Zoom Focus
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setCommandOpen(true)}
-              className="inline-flex items-center gap-2 px-3 py-1.5 text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-slate-300 dark:hover:border-slate-700 whitespace-nowrap shrink-0"
+              className="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg hover:border-slate-300 dark:hover:border-slate-700 whitespace-nowrap shrink-0"
             >
               <Command className="w-3.5 h-3.5" />
               Quick Command
               <span className="font-mono text-[11px] text-slate-400">⌘K</span>
             </button>
-          </div>
-
-          <div className="flex items-center gap-3 shrink-0">
             <button
               type="button"
               onClick={() => setDarkMode((v) => !v)}
@@ -807,6 +900,40 @@ function StudyTrackerWorkspace() {
 
         {/* Main Viewport */}
         <main className="flex-1 p-6 lg:p-8 max-w-6xl w-full mx-auto">
+          {/* Persistent Low Midterm Study Reminder (always visible when any incomplete course mid < 60%) */}
+          {lowMidCourses.length > 0 && (
+            <div className="mb-6 p-4 glass-panel border border-red-200/80 dark:border-red-900/70 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start sm:items-center gap-3 min-w-0">
+                <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5 sm:mt-0" />
+                <div className="text-xs sm:text-sm text-slate-800 dark:text-slate-100">
+                  <strong className="text-red-700 dark:text-red-300">
+                    Midterm Recovery Reminder — Study Now:
+                  </strong>{' '}
+                  {lowMidCourses
+                    .map((c) => `${c.code} (${getMidtermPercent(c)}%)`)
+                    .join(', ')}{' '}
+                  scored below 60%. Put extra focus time in before finals!
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleStartCourseRecoveryFocus(lowMidCourses[0].id)}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg whitespace-nowrap"
+                >
+                  Study {lowMidCourses[0].code} Now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveSection('courses')}
+                  className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 glass-subtle rounded-lg whitespace-nowrap"
+                >
+                  Courses
+                </button>
+              </div>
+            </div>
+          )}
+
           {pendingInviteCode && pendingInviteCode !== profile.friendCode && (
             <div className="mb-6 p-4 glass-panel border border-blue-200/80 dark:border-blue-800/70 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
@@ -866,6 +993,8 @@ function StudyTrackerWorkspace() {
               onReconnectWorkspace={() => void handleConnectWorkspace()}
               onStartQuickTimer={handleStartTimer}
               onStopAndSaveTimer={() => void handleStopAndSaveTimer()}
+              onOpenFocusZoom={() => setFocusZoomOpen(true)}
+              onStartCourseRecoveryFocus={handleStartCourseRecoveryFocus}
               onNavigate={(sec) => setActiveSection(sec)}
             />
           )}
@@ -878,6 +1007,7 @@ function StudyTrackerWorkspace() {
               topics={topics}
               accessToken={accessToken}
               onRequestAuth={() => void handleConnectWorkspace()}
+              onStartRecoveryFocus={handleStartCourseRecoveryFocus}
               onNotify={notify}
             />
           )}
@@ -902,6 +1032,7 @@ function StudyTrackerWorkspace() {
               onPauseTimer={() => setTimerRunning(false)}
               onStopAndSaveTimer={handleStopAndSaveTimer}
               onResetTimer={handleResetTimer}
+              onOpenFocusZoom={() => setFocusZoomOpen(true)}
               onNotify={notify}
             />
           )}
@@ -941,6 +1072,13 @@ function StudyTrackerWorkspace() {
               pendingInviteCode={pendingInviteCode}
               onClearPendingInvite={() => setPendingInviteCode(null)}
               onRequestAuth={() => void handleConnectWorkspace()}
+              onStartFocusZoom={(courseCode) => {
+                const matched = courses.find(
+                  (c) => c.code.toLowerCase() === courseCode.toLowerCase()
+                );
+                if (matched) setTimerCourseId(matched.id);
+                handleStartTimer();
+              }}
               onNotify={notify}
             />
           )}
@@ -957,6 +1095,39 @@ function StudyTrackerWorkspace() {
           )}
         </main>
       </div>
+
+      {/* Full-Screen Zoomed Focus Timer + Integrated PDF / Notes Reader */}
+      <FocusZoomModal
+        open={focusZoomOpen}
+        onClose={() => setFocusZoomOpen(false)}
+        courses={courses}
+        topics={topics}
+        notes={notes}
+        timerRunning={timerRunning}
+        timerSeconds={timerSeconds}
+        timerPreset={timerPreset}
+        timerCourseId={timerCourseId}
+        timerTopicId={timerTopicId}
+        soundscape={soundscape}
+        soundVolume={soundVolume}
+        accessToken={accessToken}
+        onRequestAuth={() => void handleConnectWorkspace()}
+        onSetTimerPreset={setTimerPreset}
+        onSetTimerTarget={(cId, tId) => {
+          setTimerCourseId(cId);
+          setTimerTopicId(tId);
+        }}
+        onStartTimer={() => {
+          if (!timerStartedIso) setTimerStartedIso(new Date().toISOString());
+          setTimerRunning(true);
+        }}
+        onPauseTimer={() => setTimerRunning(false)}
+        onStopAndSaveTimer={handleStopAndSaveTimer}
+        onResetTimer={handleResetTimer}
+        onChangeSoundscape={handleChangeSoundscape}
+        onChangeSoundVolume={handleChangeSoundVolume}
+        onNotify={notify}
+      />
 
       {/* Command Palette */}
       <CommandPalette

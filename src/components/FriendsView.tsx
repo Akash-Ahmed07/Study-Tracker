@@ -1,13 +1,18 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Check,
+  Clock,
   Copy,
   Download,
+  ExternalLink,
   Eye,
   Link2,
   Lock,
   Mail,
+  Maximize2,
+  MessageCircle,
   Play,
+  Search,
   Trophy,
   UserPlus,
   Users,
@@ -35,7 +40,12 @@ import {
   UserProfile,
   UserPublicProfile,
 } from '../lib/types.ts';
-import { sendStudyEmail } from '../lib/workspace.ts';
+import {
+  fetchDriveFileBlobUrl,
+  getDriveDirectDownloadUrl,
+  getDrivePreviewEmbedUrl,
+  sendStudyEmail,
+} from '../lib/workspace.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
 import { FriendsHoursComparisonChart } from './StudyCharts.tsx';
 
@@ -53,7 +63,25 @@ interface FriendsViewProps {
   pendingInviteCode?: string | null;
   onClearPendingInvite?: () => void;
   onRequestAuth: () => void;
+  onStartFocusZoom?: (courseCode: string) => void;
   onNotify: (msg: string) => void;
+}
+
+function getTimestampMillis(val: unknown): number | null {
+  if (!val) return null;
+  if (typeof val === 'object' && val !== null && 'toMillis' in val) {
+    const fn = (val as { toMillis?: () => number }).toMillis;
+    if (typeof fn === 'function') return fn();
+  }
+  return null;
+}
+
+function formatElapsedClock(totalSeconds: number): string {
+  const safe = Math.max(0, totalSeconds);
+  const h = Math.floor(safe / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = safe % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 export const FriendsView: React.FC<FriendsViewProps> = ({
@@ -70,6 +98,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   pendingInviteCode,
   onClearPendingInvite,
   onRequestAuth,
+  onStartFocusZoom,
   onNotify,
 }) => {
   const inviteLink = useMemo(() => {
@@ -77,20 +106,43 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     return `${window.location.origin}/?invite=${encodeURIComponent(profile.friendCode)}`;
   }, [profile.friendCode]);
 
+  const whatsappShareUrl = useMemo(() => {
+    const text = `Join me on Study Tracker! Track study sessions, share PDF notes, and compare study streaks.\nFriend Code: ${profile.friendCode}\nInvite Link: ${inviteLink}`;
+    return `https://wa.me/?text=${encodeURIComponent(text)}`;
+  }, [inviteLink, profile.friendCode]);
+
   const [friendLookupInput, setFriendLookupInput] = useState(pendingInviteCode || '');
+  const [lookingUpFriend, setLookingUpFriend] = useState(false);
+  const [foundStudentPreview, setFoundStudentPreview] = useState<{
+    uid: string;
+    displayName: string;
+  } | null>(null);
   const [sendingInvite, setSendingInvite] = useState(false);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (pendingInviteCode) {
       setFriendLookupInput(pendingInviteCode);
     }
   }, [pendingInviteCode]);
 
-  // Group study session invite form
+  // Live Study Together Room creation form
   const [groupFriendUid, setGroupFriendUid] = useState(friendProfiles[0]?.uid || '');
   const [groupCourseCode, setGroupCourseCode] = useState(courses[0]?.code || 'STUDY');
   const [groupTopicTitle, setGroupTopicTitle] = useState('');
   const [groupMinutes, setGroupMinutes] = useState('50');
+  const [creatingRoom, setCreatingRoom] = useState(false);
+
+  // Live clock tick for active study rooms
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const hasLiveRooms = useMemo(
+    () => groupSessions.some((gs) => gs.status === 'active'),
+    [groupSessions]
+  );
+  useEffect(() => {
+    if (!hasLiveRooms) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasLiveRooms]);
 
   // Gmail study invite modal / confirmation
   const [gmailTo, setGmailTo] = useState('');
@@ -100,7 +152,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   const [gmailBody, setGmailBody] = useState(() => {
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     const link = origin ? `${origin}/?invite=${encodeURIComponent(profile.friendCode)}` : '';
-    return `Hey! Join me on Study Tracker so we can compare syllabus progress and log group study sessions together.\n\nMy Friend Code: ${profile.friendCode}${link ? `\nDirect Invite Link: ${link}` : ''}`;
+    return `Hey! Join me on Study Tracker so we can study together live, share lecture PDFs, and compare study streaks.\n\nMy Friend Code: ${profile.friendCode}${link ? `\nDirect Invite Link: ${link}` : ''}`;
   });
   const [confirmGmailOpen, setConfirmGmailOpen] = useState(false);
   const [sendingGmail, setSendingGmail] = useState(false);
@@ -108,6 +160,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   // Shared note viewer & save copy
   const [viewingShared, setViewingShared] = useState<SharedNote | null>(null);
   const [sharedBlobUrl, setSharedBlobUrl] = useState<string | null>(null);
+  const [sharedDriveEmbedUrl, setSharedDriveEmbedUrl] = useState<string | null>(null);
   const [savingCopyId, setSavingCopyId] = useState<string | null>(null);
 
   const myWeeklyMinutes = computeWeeklyMinutes(sessions);
@@ -146,14 +199,46 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     [courses, topics]
   );
 
+  const sortedGroupSessions = useMemo(() => {
+    const rank = (s: GroupStudySession['status']) =>
+      s === 'active' ? 0 : s === 'invited' ? 1 : 2;
+    return [...groupSessions].sort((a, b) => {
+      const diff = rank(a.status) - rank(b.status);
+      if (diff !== 0) return diff;
+      return (getTimestampMillis(b.createdAt) || 0) - (getTimestampMillis(a.createdAt) || 0);
+    });
+  }, [groupSessions]);
+
+  const handleFindStudent = async () => {
+    const val = friendLookupInput.trim();
+    if (!val) return;
+    setLookingUpFriend(true);
+    try {
+      const target = await lookupStudentByCodeOrEmail(val);
+      if (!target) {
+        setFoundStudentPreview(null);
+        onNotify('No student found yet. Share your Invite Link or send a Gmail invite.');
+        return;
+      }
+      if (target.uid === profile.uid) {
+        setFoundStudentPreview(null);
+        onNotify('That friend code or email belongs to your own account.');
+        return;
+      }
+      setFoundStudentPreview(target);
+    } finally {
+      setLookingUpFriend(false);
+    }
+  };
+
   const handleSendFriendRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!friendLookupInput.trim()) return;
     setSendingInvite(true);
     try {
-      const target = await lookupStudentByCodeOrEmail(friendLookupInput);
+      const target = foundStudentPreview || (await lookupStudentByCodeOrEmail(friendLookupInput));
       if (!target) {
-        onNotify('No student found with that friend code or email. You can also send a Gmail invite below.');
+        onNotify('No student found with that friend code or email. Send your invite link via WhatsApp or Gmail!');
         return;
       }
       if (target.uid === profile.uid) {
@@ -162,6 +247,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       }
       await sendFriendRequest(profile, target);
       setFriendLookupInput('');
+      setFoundStudentPreview(null);
       if (pendingInviteCode && onClearPendingInvite) {
         onClearPendingInvite();
       }
@@ -177,15 +263,20 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     e.preventDefault();
     const targetUid = groupFriendUid || friendProfiles[0]?.uid;
     if (!targetUid || !groupTopicTitle.trim()) return;
-    await createGroupStudyInvite(
-      profile,
-      targetUid,
-      groupCourseCode.trim() || 'STUDY',
-      groupTopicTitle.trim(),
-      Number(groupMinutes) || 50
-    );
-    setGroupTopicTitle('');
-    onNotify('Group study session invite sent.');
+    setCreatingRoom(true);
+    try {
+      await createGroupStudyInvite(
+        profile,
+        targetUid,
+        groupCourseCode.trim() || 'STUDY',
+        groupTopicTitle.trim(),
+        Number(groupMinutes) || 50
+      );
+      setGroupTopicTitle('');
+      onNotify('Study room created and invite sent to your friend.');
+    } finally {
+      setCreatingRoom(false);
+    }
   };
 
   const handleOpenSharedNote = async (sn: SharedNote) => {
@@ -194,8 +285,23 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       URL.revokeObjectURL(sharedBlobUrl);
       setSharedBlobUrl(null);
     }
+    setSharedDriveEmbedUrl(null);
     if (sn.kind === 'text') return;
     try {
+      if (sn.driveFileId) {
+        if (accessToken && sn.sizeBytes <= 60 * 1024 * 1024) {
+          try {
+            const url = await fetchDriveFileBlobUrl(accessToken, sn.driveFileId, sn.mimeType);
+            setSharedBlobUrl(url);
+            return;
+          } catch {
+            // Fall through to Google Drive embed preview
+          }
+        }
+        setSharedDriveEmbedUrl(getDrivePreviewEmbedUrl(sn.driveFileId));
+        return;
+      }
+
       const idToken = await getIdToken();
       const res = await fetch(
         `/api/files/${encodeURIComponent(sn.ownerUid)}/${encodeURIComponent(
@@ -216,8 +322,9 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     try {
       let newStorageKey = '';
       let sizeBytes = sn.sizeBytes;
+      const driveFileId = sn.driveFileId || '';
 
-      if (sn.kind === 'file' && sn.storageKey) {
+      if (sn.kind === 'file' && !driveFileId && sn.storageKey) {
         const idToken = await getIdToken();
         const res = await fetch('/api/files/copy-shared', {
           method: 'POST',
@@ -230,6 +337,10 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
             storageKey: sn.storageKey,
           }),
         });
+        const ctype = res.headers.get('content-type') || '';
+        if (!ctype.includes('application/json')) {
+          throw new Error('Could not copy legacy server file.');
+        }
         const data = (await res.json()) as {
           error?: string;
           storageKey?: string;
@@ -257,12 +368,12 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
           sizeBytes,
           storageKey: newStorageKey,
           isShared: false,
-          driveFileId: '',
+          driveFileId,
         },
         [],
         profile.displayName
       );
-      onNotify(`Saved copy of "${sn.title}" to your Notes & Files library.`);
+      onNotify(`Saved "${sn.title}" to your Notes & Files library.`);
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Failed to save copy.');
     } finally {
@@ -294,11 +405,11 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
-            Friends & Study Together
+            6. Friends &amp; Study Together
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            Compare syllabus progress, weekly study hours, group sessions, and shared notes — grades & CGPA stay private.
+            Invite classmates in 1 click, run Live Study Together rooms, and share notes — grades &amp; CGPA stay strictly private.
           </p>
         </div>
 
@@ -314,13 +425,22 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
             <Link2 className="w-3.5 h-3.5" />
             Copy Invite Link
           </button>
+          <a
+            href={whatsappShareUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors whitespace-nowrap"
+          >
+            <MessageCircle className="w-3.5 h-3.5" />
+            WhatsApp Share
+          </a>
           <button
             type="button"
             onClick={() => {
               void navigator.clipboard?.writeText(profile.friendCode);
               onNotify(`Copied Friend Code: ${profile.friendCode}`);
             }}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-mono font-medium text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
+            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-mono font-medium text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
           >
             <Copy className="w-3.5 h-3.5 text-slate-400" />
             {profile.friendCode}
@@ -331,12 +451,18 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       {/* Add Friend + Gmail Invite */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-6 glass-panel rounded-xl p-6 space-y-4">
-          <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-            Invite a Study Friend
-          </h2>
-          <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg space-y-1.5">
-            <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-              Your Direct Invite Link (includes code {profile.friendCode})
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+              Invite &amp; Connect Friends
+            </h2>
+            <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+              {friendProfiles.length} connected
+            </span>
+          </div>
+
+          <div className="p-3.5 glass-subtle rounded-lg space-y-2">
+            <div className="text-xs font-medium text-slate-700 dark:text-slate-300">
+              Step 1 · Share your direct invite link or Friend Code (<span className="font-mono">{profile.friendCode}</span>)
             </div>
             <div className="flex items-center gap-2">
               <input
@@ -354,28 +480,55 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                 }}
                 className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 rounded-md whitespace-nowrap"
               >
-                Copy
+                Copy Link
               </button>
             </div>
           </div>
-          <form onSubmit={(e) => void handleSendFriendRequest(e)} className="flex gap-2">
-            <input
-              type="text"
-              required
-              value={friendLookupInput}
-              onChange={(e) => setFriendLookupInput(e.target.value)}
-              placeholder="Enter friend code (ST-...) or email"
-              className="flex-1 px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
-            />
-            <button
-              type="submit"
-              disabled={sendingInvite}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap"
-            >
-              <UserPlus className="w-4 h-4" />
-              {sendingInvite ? 'Sending...' : 'Invite'}
-            </button>
-          </form>
+
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-slate-700 dark:text-slate-300">
+              Step 2 · Or add a classmate by their Friend Code or Gmail
+            </div>
+            <form onSubmit={(e) => void handleSendFriendRequest(e)} className="flex gap-2">
+              <input
+                type="text"
+                required
+                value={friendLookupInput}
+                onChange={(e) => {
+                  setFriendLookupInput(e.target.value);
+                  setFoundStudentPreview(null);
+                }}
+                placeholder="Enter Friend Code (ST-...) or classmate email"
+                className="flex-1 px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
+              />
+              <button
+                type="button"
+                disabled={lookingUpFriend || !friendLookupInput.trim()}
+                onClick={() => void handleFindStudent()}
+                className="inline-flex items-center gap-1 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 glass-subtle rounded-lg disabled:opacity-50 whitespace-nowrap"
+              >
+                <Search className="w-3.5 h-3.5" />
+                {lookingUpFriend ? 'Finding...' : 'Find'}
+              </button>
+              <button
+                type="submit"
+                disabled={sendingInvite}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap"
+              >
+                <UserPlus className="w-4 h-4" />
+                {sendingInvite ? 'Sending...' : 'Send Invite'}
+              </button>
+            </form>
+
+            {foundStudentPreview && (
+              <div className="px-3 py-2 bg-emerald-50/80 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 rounded-lg text-xs text-emerald-800 dark:text-emerald-200 flex items-center justify-between">
+                <span>
+                  Found student: <strong>{foundStudentPreview.displayName}</strong>
+                </span>
+                <span className="font-mono text-[11px]">Ready to invite</span>
+              </div>
+            )}
+          </div>
 
           {incomingRequests.length > 0 && (
             <div className="pt-2 space-y-2">
@@ -388,7 +541,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg flex items-center justify-between gap-3"
                 >
                   <div className="text-sm font-medium text-slate-800 dark:text-slate-200">
-                    {req.fromName}
+                    {req.fromName} wants to connect
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -470,7 +623,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         </div>
       </div>
 
-      {/* Weekly Leaderboard + Group Study Session Invites */}
+      {/* Weekly Leaderboard + Live Study Together Rooms */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-5 glass-panel rounded-xl p-6 space-y-4">
           <div className="flex items-center justify-between">
@@ -510,113 +663,203 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
 
         <div className="lg:col-span-7 glass-panel rounded-xl p-6 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-              Study-Session Invites & Group Logging
-            </h2>
-            <Users className="w-4 h-4 text-slate-400" />
+            <div>
+              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                Live Study Together Rooms
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Pick a friend, set a focus sprint (25m / 50m / 90m), and study together with Zoom + Notes.
+              </p>
+            </div>
+            <Users className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
           </div>
 
-          <form onSubmit={(e) => void handleCreateGroupInvite(e)} className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
-            <select
-              value={groupFriendUid || friendProfiles[0]?.uid || ''}
-              onChange={(e) => setGroupFriendUid(e.target.value)}
-              disabled={friendProfiles.length === 0}
-              className="px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
-            >
-              {friendProfiles.length === 0 ? (
-                <option value="">No friends yet</option>
-              ) : (
-                friendProfiles.map((f) => (
-                  <option key={f.uid} value={f.uid}>
-                    {f.displayName}
+          <form
+            onSubmit={(e) => void handleCreateGroupInvite(e)}
+            className="p-4 glass-subtle rounded-xl space-y-3"
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <select
+                value={groupFriendUid || friendProfiles[0]?.uid || ''}
+                onChange={(e) => setGroupFriendUid(e.target.value)}
+                disabled={friendProfiles.length === 0}
+                className="px-3 py-2 text-sm bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
+              >
+                {friendProfiles.length === 0 ? (
+                  <option value="">Connect a friend first</option>
+                ) : (
+                  friendProfiles.map((f) => (
+                    <option key={f.uid} value={f.uid}>
+                      With {f.displayName}
+                    </option>
+                  ))
+                )}
+              </select>
+
+              <select
+                value={groupCourseCode}
+                onChange={(e) => setGroupCourseCode(e.target.value)}
+                className="px-3 py-2 text-sm bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
+              >
+                <option value="STUDY">General Study</option>
+                {courses.map((c) => (
+                  <option key={c.id} value={c.code}>
+                    {c.code} — {c.title}
                   </option>
-                ))
-              )}
-            </select>
-            <input
-              type="text"
-              value={groupCourseCode}
-              onChange={(e) => setGroupCourseCode(e.target.value)}
-              placeholder="Course code"
-              className="px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
-            />
-            <input
-              type="text"
-              required
-              value={groupTopicTitle}
-              onChange={(e) => setGroupTopicTitle(e.target.value)}
-              placeholder="Topic to study together"
-              className="px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
-            />
-            <div className="flex gap-2">
+                ))}
+              </select>
+
               <input
-                type="number"
-                min="5"
-                max="360"
-                value={groupMinutes}
-                onChange={(e) => setGroupMinutes(e.target.value)}
-                className="w-20 px-2.5 py-2 text-sm font-mono tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
+                type="text"
+                required
+                value={groupTopicTitle}
+                onChange={(e) => setGroupTopicTitle(e.target.value)}
+                placeholder="Topic / chapter to study..."
+                className="px-3 py-2 text-sm bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
               />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-slate-500 dark:text-slate-400 mr-1">Duration:</span>
+                {['25', '50', '90'].map((mins) => (
+                  <button
+                    key={mins}
+                    type="button"
+                    onClick={() => setGroupMinutes(mins)}
+                    className={`px-2.5 py-1 text-xs font-mono rounded-md transition-colors ${
+                      groupMinutes === mins
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    {mins}m
+                  </button>
+                ))}
+                <input
+                  type="number"
+                  min="5"
+                  max="360"
+                  value={groupMinutes}
+                  onChange={(e) => setGroupMinutes(e.target.value)}
+                  className="w-16 px-2 py-1 text-xs font-mono tabular-nums bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md"
+                />
+                <span className="text-xs text-slate-500">min</span>
+              </div>
+
               <button
                 type="submit"
-                disabled={friendProfiles.length === 0}
-                className="flex-1 px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50 whitespace-nowrap"
+                disabled={friendProfiles.length === 0 || creatingRoom}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50 whitespace-nowrap"
               >
-                Invite
+                <Play className="w-3.5 h-3.5" />
+                {creatingRoom ? 'Starting...' : 'Invite & Start Room'}
               </button>
             </div>
           </form>
 
-          {groupSessions.length === 0 ? (
-            <p className="text-sm text-slate-500 dark:text-slate-400 py-4">
-              No group study sessions yet. Connect with a friend to schedule and log sessions together.
+          {sortedGroupSessions.length === 0 ? (
+            <p className="text-sm text-slate-500 dark:text-slate-400 py-4 text-center">
+              No study together rooms yet. Start one above so both of you can track your session live!
             </p>
           ) : (
-            <div className="divide-y divide-slate-100 dark:divide-slate-800">
-              {groupSessions.map((gs) => (
-                <div
-                  key={gs.id}
-                  className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                      {gs.courseCode} — {gs.topicTitle}
-                    </p>
-                    <p className="text-xs text-slate-500 tabular-nums">
-                      Host: {gs.hostName} · {gs.durationMinutes} min · Status: {gs.status}
-                    </p>
+            <div className="space-y-2.5">
+              {sortedGroupSessions.map((gs) => {
+                const isParticipant =
+                  gs.hostUid === profile.uid || gs.participantUids.includes(profile.uid);
+                const startedMs = getTimestampMillis(gs.updatedAt) || getTimestampMillis(gs.createdAt);
+                const elapsedSec =
+                  gs.status === 'active' && startedMs
+                    ? Math.max(0, Math.floor((nowMs - startedMs) / 1000))
+                    : 0;
+                const partner = friendProfiles.find(
+                  (f) => f.uid === (gs.hostUid === profile.uid ? gs.invitedUid : gs.hostUid)
+                );
+
+                return (
+                  <div
+                    key={gs.id}
+                    className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      gs.status === 'active'
+                        ? 'bg-blue-50/70 dark:bg-blue-950/35 border-blue-200 dark:border-blue-800/70'
+                        : 'glass-subtle border-slate-200/70 dark:border-slate-800/70'
+                    }`}
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-mono font-semibold text-blue-700 dark:text-blue-300">
+                          {gs.courseCode}
+                        </span>
+                        <span className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                          {gs.topicTitle}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                        {gs.hostUid === profile.uid
+                          ? `You invited ${partner?.displayName || 'friend'}`
+                          : `Hosted by ${gs.hostName}`}
+                        {' · '}
+                        Target {gs.durationMinutes} min ·{' '}
+                        {gs.status === 'active'
+                          ? 'Studying live now'
+                          : gs.status === 'invited'
+                            ? 'Waiting for friend to join'
+                            : 'Completed & logged'}
+                      </p>
+                      {gs.status === 'active' && (
+                        <div className="inline-flex items-center gap-1.5 text-xs font-mono font-semibold tabular-nums text-emerald-700 dark:text-emerald-300 pt-0.5">
+                          <Clock className="w-3.5 h-3.5" />
+                          Live Room Clock: {formatElapsedClock(elapsedSec)}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {gs.status === 'invited' && gs.invitedUid === profile.uid && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void joinGroupStudySession(profile.uid, gs).then(() =>
+                              onNotify('Joined live study room! Open Zoom + Notes when ready.')
+                            )
+                          }
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
+                        >
+                          <Play className="w-3.5 h-3.5" />
+                          Join Room
+                        </button>
+                      )}
+                      {gs.status !== 'completed' && onStartFocusZoom && (
+                        <button
+                          type="button"
+                          onClick={() => onStartFocusZoom(gs.courseCode)}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-white/85 dark:bg-slate-900 border border-blue-200 dark:border-blue-800 rounded-lg"
+                        >
+                          <Maximize2 className="w-3.5 h-3.5" />
+                          Zoom + Notes
+                        </button>
+                      )}
+                      {gs.status !== 'completed' && isParticipant && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const minsToLog =
+                              gs.status === 'active' && elapsedSec >= 60
+                                ? Math.max(1, Math.round(elapsedSec / 60))
+                                : gs.durationMinutes;
+                            void completeGroupStudySession(profile.uid, gs, minsToLog).then(() =>
+                              onNotify(`Completed & logged ${minsToLog} min group study session.`)
+                            );
+                          }}
+                          className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
+                        >
+                          Complete &amp; Log
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {gs.status === 'invited' && gs.invitedUid === profile.uid && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void joinGroupStudySession(profile.uid, gs).then(() =>
-                            onNotify('Joined group study session.')
-                          )
-                        }
-                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
-                      >
-                        <Play className="w-3.5 h-3.5" />
-                        Join Session
-                      </button>
-                    )}
-                    {gs.status !== 'completed' && gs.hostUid === profile.uid && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void completeGroupStudySession(profile.uid, gs, gs.durationMinutes).then(
-                            () => onNotify('Group study session completed and logged.')
-                          )
-                        }
-                        className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
-                      >
-                        Complete & Log
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -696,10 +939,10 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       <div className="glass-panel rounded-xl overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
           <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-            Notes & files shared by friends
+            Notes &amp; files shared by friends
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            Open shared notes and documents or save a copy directly into your own library.
+            Open shared notes and Drive PDFs or save a copy directly into your own library.
           </p>
         </div>
 
@@ -721,6 +964,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                     Shared by {sn.ownerName} · {sn.courseCode || 'GENERAL'} ·{' '}
                     {sn.kind === 'text' ? 'Text note' : sn.originalFilename}
+                    {sn.driveFileId ? ' · Google Drive' : ''}
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -765,17 +1009,31 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   Shared by {viewingShared.ownerName} · {viewingShared.courseCode}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (sharedBlobUrl) URL.revokeObjectURL(sharedBlobUrl);
-                  setSharedBlobUrl(null);
-                  setViewingShared(null);
-                }}
-                className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {viewingShared.driveFileId && (
+                  <a
+                    href={getDriveDirectDownloadUrl(viewingShared.driveFileId)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
+                  >
+                    Download from Drive
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (sharedBlobUrl) URL.revokeObjectURL(sharedBlobUrl);
+                    setSharedBlobUrl(null);
+                    setSharedDriveEmbedUrl(null);
+                    setViewingShared(null);
+                  }}
+                  className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
             <div className="p-6 overflow-y-auto flex-1">
               {viewingShared.kind === 'text' ? (
@@ -794,9 +1052,16 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   title={viewingShared.title}
                   className="w-full h-[65vh] rounded-lg border border-slate-200 dark:border-slate-800"
                 />
+              ) : sharedDriveEmbedUrl ? (
+                <iframe
+                  src={sharedDriveEmbedUrl}
+                  title={viewingShared.title}
+                  className="w-full h-[65vh] rounded-lg border border-slate-200 dark:border-slate-800 bg-white"
+                  allow="autoplay"
+                />
               ) : (
                 <div className="py-12 text-center text-sm text-slate-500">
-                  Use "Save Copy to My Library" to download or open this document format.
+                  Use &ldquo;Save Copy to My Library&rdquo; to download or open this document format.
                 </div>
               )}
             </div>

@@ -3,6 +3,7 @@ import {
   Check,
   Copy,
   Download,
+  ExternalLink,
   Eye,
   FileText,
   LogOut,
@@ -22,6 +23,7 @@ import {
   createNoteOrFile,
   createStudyGroup,
   deleteGroupMessage,
+  deleteStudyGroup,
   joinStudyGroupByCode,
   leaveStudyGroup,
   sendGroupMessage,
@@ -34,6 +36,13 @@ import {
   UserProfile,
   UserPublicProfile,
 } from '../lib/types.ts';
+import {
+  fetchDriveFileBlobUrl,
+  getDriveDirectDownloadUrl,
+  getDrivePreviewEmbedUrl,
+  setDriveFileAnyoneReader,
+  uploadFileToDriveResumable,
+} from '../lib/workspace.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
 
 interface NotesGroupsPanelProps {
@@ -42,16 +51,19 @@ interface NotesGroupsPanelProps {
   notes: NoteOrFile[];
   friendProfiles: UserPublicProfile[];
   studyGroups: StudyGroup[];
+  accessToken: string | null;
+  onRequestAuth: () => void;
   onNotify: (msg: string) => void;
 }
 
-const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024;
+const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function formatMsgTime(ts: unknown): string {
@@ -71,6 +83,8 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
   notes,
   friendProfiles,
   studyGroups,
+  accessToken,
+  onRequestAuth,
   onNotify,
 }) => {
   const [selectedGroupId, setSelectedGroupId] = useState<string>(studyGroups[0]?.id || '');
@@ -92,6 +106,7 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
   const [chatText, setChatText] = useState('');
   const [sendingText, setSendingText] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [showShareLibraryModal, setShowShareLibraryModal] = useState(false);
   const [addFriendSelect, setAddFriendSelect] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -100,9 +115,12 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
   // Preview shared PDF/file/note from group message
   const [previewMsg, setPreviewMsg] = useState<StudyGroupMessage | null>(null);
   const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null);
+  const [previewDriveEmbedUrl, setPreviewDriveEmbedUrl] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [savingMsgId, setSavingMsgId] = useState<string | null>(null);
   const [confirmLeaveGroup, setConfirmLeaveGroup] = useState<StudyGroup | null>(null);
+  const [confirmDeleteGroup, setConfirmDeleteGroup] = useState<StudyGroup | null>(null);
+  const [deletingGroup, setDeletingGroup] = useState(false);
 
   useEffect(() => {
     if (!selectedGroupId && studyGroups.length > 0) {
@@ -117,7 +135,6 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
     [selectedGroupId, studyGroups]
   );
 
-  // Real-time messages listener for the active group
   useEffect(() => {
     if (!activeGroup) {
       setMessages([]);
@@ -223,11 +240,46 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
   const handleUploadFileToGroup = async (file: File) => {
     if (!activeGroup) return;
     if (file.size > MAX_FILE_SIZE_BYTES) {
-      onNotify(`"${file.name}" exceeds the 100 MB per-file limit.`);
+      onNotify(`"${file.name}" exceeds the 2 GB per-file limit.`);
       return;
     }
+
     setUploadingFile(true);
+    setUploadProgress(0);
     try {
+      if (accessToken) {
+        const driveRes = await uploadFileToDriveResumable(accessToken, file, {
+          shareAnyone: true,
+          onProgress: (pct) => setUploadProgress(pct),
+        });
+        await sendGroupMessage(activeGroup.id, profile, {
+          kind: 'file',
+          noteTitle: file.name,
+          originalFilename: file.name,
+          mimeType: file.type || 'application/pdf',
+          sizeBytes: file.size,
+          storageKey: '',
+          driveFileId: driveRes.id,
+        });
+        onNotify(`Shared "${file.name}" (${formatBytes(file.size)}) via your Google Drive.`);
+        return;
+      }
+
+      let serverAvailable = false;
+      try {
+        const healthRes = await fetch('/api/health');
+        const ctype = healthRes.headers.get('content-type') || '';
+        serverAvailable = healthRes.ok && ctype.includes('application/json');
+      } catch {
+        serverAvailable = false;
+      }
+
+      if (!serverAvailable) {
+        onNotify('Connect Google Drive first to share files up to 2 GB in this group.');
+        onRequestAuth();
+        return;
+      }
+
       const idToken = await getIdToken();
       const form = new FormData();
       form.append('file', file);
@@ -236,6 +288,10 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
         headers: { Authorization: `Bearer ${idToken}` },
         body: form,
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('Connect Google Drive to upload files up to 2 GB.');
+      }
       const data = (await res.json()) as {
         error?: string;
         storageKey?: string;
@@ -259,12 +315,16 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
       onNotify(err instanceof Error ? err.message : 'Failed to share file.');
     } finally {
       setUploadingFile(false);
+      setUploadProgress(null);
     }
   };
 
   const handleShareLibraryNote = async (note: NoteOrFile) => {
     if (!activeGroup) return;
     try {
+      if (note.driveFileId && accessToken) {
+        await setDriveFileAnyoneReader(accessToken, note.driveFileId);
+      }
       await sendGroupMessage(activeGroup.id, profile, {
         kind: note.kind === 'file' ? 'file' : 'note',
         text: note.textContent,
@@ -273,6 +333,7 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
         mimeType: note.mimeType,
         sizeBytes: note.sizeBytes,
         storageKey: note.storageKey,
+        driveFileId: note.driveFileId,
         sourceNoteId: note.id,
       });
       setShowShareLibraryModal(false);
@@ -289,10 +350,29 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
       URL.revokeObjectURL(previewBlobUrl);
       setPreviewBlobUrl(null);
     }
-    if (msg.kind !== 'file' || !msg.storageKey) return;
+    setPreviewDriveEmbedUrl(null);
+    if (msg.kind !== 'file') return;
 
     setLoadingPreview(true);
     try {
+      if (msg.driveFileId) {
+        if (accessToken && msg.sizeBytes <= 60 * 1024 * 1024) {
+          try {
+            const url = await fetchDriveFileBlobUrl(accessToken, msg.driveFileId, msg.mimeType);
+            setPreviewBlobUrl(url);
+            return;
+          } catch {
+            // Fall through to Google Drive embed preview
+          }
+        }
+        setPreviewDriveEmbedUrl(getDrivePreviewEmbedUrl(msg.driveFileId));
+        return;
+      }
+
+      if (!msg.storageKey) {
+        throw new Error('No file attachment source found.');
+      }
+
       const idToken = await getIdToken();
       const url = `/api/files/${encodeURIComponent(msg.senderUid)}/${encodeURIComponent(
         msg.storageKey
@@ -318,7 +398,9 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
     try {
       let newStorageKey = '';
       let sizeBytes = msg.sizeBytes;
-      if (msg.kind === 'file' && msg.storageKey) {
+      const driveFileId = msg.driveFileId || '';
+
+      if (msg.kind === 'file' && !driveFileId && msg.storageKey) {
         const idToken = await getIdToken();
         const res = await fetch('/api/files/copy-shared', {
           method: 'POST',
@@ -332,6 +414,10 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
             groupId: activeGroup.id,
           }),
         });
+        const ctype = res.headers.get('content-type') || '';
+        if (!ctype.includes('application/json')) {
+          throw new Error('Server file copy is not available for legacy uploads on this host.');
+        }
         const data = (await res.json()) as {
           error?: string;
           storageKey?: string;
@@ -359,7 +445,7 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
           sizeBytes,
           storageKey: newStorageKey,
           isShared: false,
-          driveFileId: '',
+          driveFileId,
         },
         [],
         profile.displayName
@@ -464,10 +550,10 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-3">
             <MessageSquare className="w-10 h-10 text-slate-400" />
             <p className="text-base font-semibold text-slate-800 dark:text-slate-200">
-              Notes & PDF Study Groups
+              Notes &amp; PDF Study Groups
             </p>
             <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md">
-              Create a WhatsApp-style group for your course or lab team to drop PDFs, lecture notes, and quick study messages in real time.
+              Create a WhatsApp-style group for your course or lab team to drop PDFs up to 2 GB via Google Drive, lecture notes, and quick study messages in real time.
             </p>
             <button
               type="button"
@@ -539,7 +625,16 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
                   </div>
                 )}
 
-                {activeGroup.ownerUid !== profile.uid && (
+                {activeGroup.ownerUid === profile.uid ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteGroup(activeGroup)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg whitespace-nowrap"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Delete Group
+                  </button>
+                ) : (
                   <button
                     type="button"
                     onClick={() => setConfirmLeaveGroup(activeGroup)}
@@ -632,6 +727,7 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
                                 >
                                   {msg.kind === 'file' ? msg.originalFilename : 'Shared text note'} ·{' '}
                                   {formatBytes(msg.sizeBytes)}
+                                  {msg.driveFileId ? ' · Google Drive' : ''}
                                 </div>
                               </div>
                             </div>
@@ -687,7 +783,6 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".pdf,.ppt,.pptx,.doc,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
                   onChange={(e) => {
                     const f = e.target.files?.[0];
                     if (f) void handleUploadFileToGroup(f);
@@ -698,11 +793,22 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
                 <button
                   type="button"
                   disabled={uploadingFile}
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => {
+                    if (!accessToken) {
+                      onNotify('Connecting your Google Drive for 2 GB group uploads...');
+                      onRequestAuth();
+                      return;
+                    }
+                    fileInputRef.current?.click();
+                  }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100/90 dark:bg-slate-800/90 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg whitespace-nowrap disabled:opacity-60"
                 >
                   <Paperclip className="w-3.5 h-3.5" />
-                  {uploadingFile ? 'Uploading PDF...' : 'Send PDF / File'}
+                  {uploadingFile
+                    ? `Uploading to Drive (${uploadProgress ?? 0}%)...`
+                    : accessToken
+                      ? 'Send PDF / File (2 GB Drive)'
+                      : 'Connect Drive & Send File'}
                 </button>
                 <button
                   type="button"
@@ -755,7 +861,7 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
           >
             <div className="flex items-center justify-between">
               <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                Create Notes & PDF Study Group
+                Create Notes &amp; PDF Study Group
               </h3>
               <button
                 type="button"
@@ -907,17 +1013,31 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
                   Shared by {previewMsg.senderName} · {formatBytes(previewMsg.sizeBytes)}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
-                  setPreviewBlobUrl(null);
-                  setPreviewMsg(null);
-                }}
-                className="p-1.5 text-slate-400 hover:text-slate-700"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {previewMsg.driveFileId && (
+                  <a
+                    href={getDriveDirectDownloadUrl(previewMsg.driveFileId)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
+                  >
+                    Download from Drive
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (previewBlobUrl) URL.revokeObjectURL(previewBlobUrl);
+                    setPreviewBlobUrl(null);
+                    setPreviewDriveEmbedUrl(null);
+                    setPreviewMsg(null);
+                  }}
+                  className="p-1.5 text-slate-400 hover:text-slate-700"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
             <div className="p-6 overflow-y-auto flex-1">
               {previewMsg.kind === 'note' ? (
@@ -938,9 +1058,16 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
                   title={previewMsg.noteTitle}
                   className="w-full h-[65vh] rounded-lg border border-slate-200 dark:border-slate-800"
                 />
+              ) : previewDriveEmbedUrl ? (
+                <iframe
+                  src={previewDriveEmbedUrl}
+                  title={previewMsg.noteTitle}
+                  className="w-full h-[65vh] rounded-lg border border-slate-200 dark:border-slate-800 bg-white"
+                  allow="autoplay"
+                />
               ) : (
                 <div className="py-12 text-center text-sm text-slate-500">
-                  Use "Save to Library" to copy and download this document format.
+                  Use &ldquo;Save to Library&rdquo; to copy and download this document format.
                 </div>
               )}
             </div>
@@ -962,6 +1089,27 @@ export const NotesGroupsPanel: React.FC<NotesGroupsPanelProps> = ({
           }
         }}
         onCancel={() => setConfirmLeaveGroup(null)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmDeleteGroup)}
+        title={`Delete group "${confirmDeleteGroup?.name || 'group'}"?`}
+        description="This permanently deletes the study group, its group code, and all messages inside it for every member."
+        confirmLabel="Delete Group"
+        tone="danger"
+        busy={deletingGroup}
+        onConfirm={async () => {
+          if (!confirmDeleteGroup) return;
+          setDeletingGroup(true);
+          try {
+            await deleteStudyGroup(confirmDeleteGroup);
+            setConfirmDeleteGroup(null);
+            onNotify('Study group permanently deleted.');
+          } finally {
+            setDeletingGroup(false);
+          }
+        }}
+        onCancel={() => setConfirmDeleteGroup(null)}
       />
     </div>
   );

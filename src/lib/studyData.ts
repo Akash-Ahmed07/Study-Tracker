@@ -183,17 +183,30 @@ export async function ensureUserInitialized(user: User): Promise<UserProfile> {
 
 export async function updateUserPreferences(
   uid: string,
-  updates: { displayName: string; gradingScale: GradingScale; weeklyGoalMinutes: number }
+  updates: {
+    displayName: string;
+    gradingScale: GradingScale;
+    weeklyGoalMinutes: number;
+    priorCgpa?: number;
+    priorCredits?: number;
+  }
 ): Promise<void> {
   const path = `users/${uid}`;
   try {
     const batch = writeBatch(db);
-    batch.update(doc(db, 'users', uid), {
+    const userPayload: Record<string, unknown> = {
       displayName: updates.displayName.slice(0, 100),
       gradingScale: updates.gradingScale,
       weeklyGoalMinutes: Math.max(30, Math.min(10080, updates.weeklyGoalMinutes)),
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (typeof updates.priorCgpa === 'number' && !Number.isNaN(updates.priorCgpa)) {
+      userPayload.priorCgpa = Math.max(0, Math.min(4, Number(updates.priorCgpa.toFixed(3))));
+    }
+    if (typeof updates.priorCredits === 'number' && !Number.isNaN(updates.priorCredits)) {
+      userPayload.priorCredits = Math.max(0, Math.min(400, Number(updates.priorCredits)));
+    }
+    batch.update(doc(db, 'users', uid), userPayload);
     batch.update(doc(db, 'userPublicProfiles', uid), {
       displayName: updates.displayName.slice(0, 100),
       weeklyGoalMinutes: Math.max(30, Math.min(10080, updates.weeklyGoalMinutes)),
@@ -247,6 +260,19 @@ export async function saveCourse(
 ): Promise<string> {
   const id = existingId || makeId('crs');
   const path = `users/${uid}/courses/${id}`;
+  const hasMid =
+    typeof course.midtermMax === 'number' &&
+    course.midtermMax > 0 &&
+    typeof course.midtermScore === 'number' &&
+    !Number.isNaN(course.midtermScore);
+
+  const midtermFields = hasMid
+    ? {
+        midtermScore: Math.max(0, Math.min(1000, Number(course.midtermScore))),
+        midtermMax: Math.max(1, Math.min(1000, Number(course.midtermMax))),
+      }
+    : {};
+
   try {
     if (existingId) {
       await updateDoc(doc(db, 'users', uid, 'courses', id), {
@@ -257,6 +283,7 @@ export async function saveCourse(
         gradeLetter: course.gradeLetter.trim().slice(0, 8),
         isCompleted: Boolean(course.isCompleted),
         color: course.color.slice(0, 24),
+        ...midtermFields,
         updatedAt: serverTimestamp(),
       });
     } else {
@@ -269,6 +296,7 @@ export async function saveCourse(
         gradeLetter: course.gradeLetter.trim().slice(0, 8),
         isCompleted: Boolean(course.isCompleted),
         color: course.color.slice(0, 24),
+        ...midtermFields,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -388,6 +416,8 @@ export async function deleteStudySession(uid: string, sessionId: string): Promis
 
 // ---------------- NOTES & FILES ----------------
 
+const MAX_STORED_FILE_BYTES = 2147483648; // 2 GB
+
 export async function createNoteOrFile(
   uid: string,
   payload: Omit<NoteOrFile, 'id' | 'userId' | 'createdAt' | 'updatedAt'>,
@@ -396,6 +426,8 @@ export async function createNoteOrFile(
 ): Promise<string> {
   const id = makeId('nte');
   const path = `users/${uid}/notes/${id}`;
+  const clampedSize = Math.max(0, Math.min(MAX_STORED_FILE_BYTES, payload.sizeBytes));
+  const cleanDriveId = (payload.driveFileId || '').slice(0, 128);
   try {
     const batch = writeBatch(db);
     batch.set(doc(db, 'users', uid, 'notes', id), {
@@ -409,10 +441,10 @@ export async function createNoteOrFile(
       textContent: payload.textContent.slice(0, 50000),
       originalFilename: payload.originalFilename.slice(0, 240),
       mimeType: payload.mimeType.slice(0, 120),
-      sizeBytes: Math.max(0, Math.min(104857600, payload.sizeBytes)),
+      sizeBytes: clampedSize,
       storageKey: payload.storageKey.slice(0, 240),
       isShared: Boolean(payload.isShared),
-      driveFileId: payload.driveFileId.slice(0, 128),
+      driveFileId: cleanDriveId,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -428,8 +460,9 @@ export async function createNoteOrFile(
         textContent: payload.textContent.slice(0, 50000),
         originalFilename: payload.originalFilename.slice(0, 240),
         mimeType: payload.mimeType.slice(0, 120),
-        sizeBytes: Math.max(0, Math.min(104857600, payload.sizeBytes)),
+        sizeBytes: clampedSize,
         storageKey: payload.storageKey.slice(0, 240),
+        driveFileId: cleanDriveId,
         allowedFriendUids: friendUids.slice(0, 25),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -470,8 +503,9 @@ export async function toggleShareNote(
         textContent: note.textContent.slice(0, 50000),
         originalFilename: note.originalFilename.slice(0, 240),
         mimeType: note.mimeType.slice(0, 120),
-        sizeBytes: Math.max(0, Math.min(104857600, note.sizeBytes)),
+        sizeBytes: Math.max(0, Math.min(MAX_STORED_FILE_BYTES, note.sizeBytes)),
         storageKey: note.storageKey.slice(0, 240),
+        driveFileId: (note.driveFileId || '').slice(0, 128),
         allowedFriendUids: friendUids.slice(0, 25),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -919,6 +953,29 @@ export async function leaveStudyGroup(group: StudyGroup, uid: string): Promise<v
   }
 }
 
+export async function deleteStudyGroup(group: StudyGroup): Promise<void> {
+  const path = `studyGroups/${group.id}`;
+  try {
+    const msgsSnap = await getDocs(collection(db, 'studyGroups', group.id, 'messages'));
+    const docs = msgsSnap.docs;
+    for (let i = 0; i < docs.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const d of docs.slice(i, i + 400)) {
+        batch.delete(d.ref);
+      }
+      await batch.commit();
+    }
+    const finalBatch = writeBatch(db);
+    if (group.groupCode) {
+      finalBatch.delete(doc(db, 'groupCodes', group.groupCode));
+    }
+    finalBatch.delete(doc(db, 'studyGroups', group.id));
+    await finalBatch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
 export async function sendGroupMessage(
   groupId: string,
   profile: UserProfile,
@@ -930,6 +987,7 @@ export async function sendGroupMessage(
     mimeType?: string;
     sizeBytes?: number;
     storageKey?: string;
+    driveFileId?: string;
     sourceNoteId?: string;
   }
 ): Promise<string> {
@@ -956,8 +1014,9 @@ export async function sendGroupMessage(
       noteTitle: cleanTitle,
       originalFilename: cleanFile,
       mimeType: (payload.mimeType || '').slice(0, 120),
-      sizeBytes: Math.max(0, Math.min(104857600, payload.sizeBytes || 0)),
+      sizeBytes: Math.max(0, Math.min(MAX_STORED_FILE_BYTES, payload.sizeBytes || 0)),
       storageKey: (payload.storageKey || '').slice(0, 240),
+      driveFileId: (payload.driveFileId || '').slice(0, 128),
       sourceNoteId: (payload.sourceNoteId || '').slice(0, 128),
       createdAt: serverTimestamp(),
     });

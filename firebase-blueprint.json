@@ -11,6 +11,8 @@
         "gradingScale": { "type": "string", "enum": ["bd", "us"] },
         "weeklyGoalMinutes": { "type": "number" },
         "friendCode": { "type": "string", "minLength": 4, "maxLength": 24, "pattern": "^[A-Z0-9\\-]+$" },
+        "priorCgpa": { "type": "number" },
+        "priorCredits": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -29,6 +31,8 @@
         "gradeLetter": { "type": "string", "maxLength": 8 },
         "isCompleted": { "type": "boolean" },
         "color": { "type": "string", "maxLength": 24 },
+        "midtermScore": { "type": "number" },
+        "midtermMax": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -72,7 +76,7 @@
     },
     "NoteOrFile": {
       "title": "NoteOrFile",
-      "description": "Student text note or uploaded file metadata (100 MB limit on binary files).",
+      "description": "Student text note or uploaded file metadata (up to 2 GB via Google Drive).",
       "type": "object",
       "properties": {
         "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -195,6 +199,7 @@
         "mimeType": { "type": "string", "maxLength": 120 },
         "sizeBytes": { "type": "number" },
         "storageKey": { "type": "string", "maxLength": 240 },
+        "driveFileId": { "type": "string", "maxLength": 128 },
         "allowedFriendUids": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -276,6 +281,7 @@
         "mimeType": { "type": "string", "maxLength": 120 },
         "sizeBytes": { "type": "number" },
         "storageKey": { "type": "string", "maxLength": 240 },
+        "driveFileId": { "type": "string", "maxLength": 128 },
         "sourceNoteId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" }
       },

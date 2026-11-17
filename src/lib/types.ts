@@ -25,6 +25,8 @@ export interface UserProfile {
   gradingScale: GradingScale;
   weeklyGoalMinutes: number;
   friendCode: string;
+  priorCgpa?: number;
+  priorCredits?: number;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -39,6 +41,8 @@ export interface Course {
   gradeLetter: string;
   isCompleted: boolean;
   color: string;
+  midtermScore?: number;
+  midtermMax?: number;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -156,6 +160,7 @@ export interface SharedNote {
   mimeType: string;
   sizeBytes: number;
   storageKey: string;
+  driveFileId?: string;
   allowedFriendUids: string[];
   createdAt?: unknown;
   updatedAt?: unknown;
@@ -222,6 +227,7 @@ export interface StudyGroupMessage {
   mimeType: string;
   sizeBytes: number;
   storageKey: string;
+  driveFileId?: string;
   sourceNoteId: string;
   createdAt?: unknown;
 }

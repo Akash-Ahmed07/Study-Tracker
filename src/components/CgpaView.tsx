@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from 'react';
-import { Lock, RotateCcw } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { History, Lock, Plus, RotateCcw, Save } from 'lucide-react';
 import {
   computeGpaReport,
   computeRequiredGpa,
   getGradePoints,
+  getMidtermPercent,
   getScaleEntries,
 } from '../lib/gpa.ts';
 import { saveCourse, updateUserPreferences } from '../lib/studyData.ts';
@@ -22,11 +23,56 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
   const [remainingCredits, setRemainingCredits] = useState('15');
   const [whatIfGrades, setWhatIfGrades] = useState<Record<string, string>>({});
 
+  // Persisted Prior / Old Semesters Record
+  const [priorCgpaInput, setPriorCgpaInput] = useState(
+    typeof profile.priorCgpa === 'number' && profile.priorCgpa > 0
+      ? String(profile.priorCgpa)
+      : ''
+  );
+  const [priorCreditsInput, setPriorCreditsInput] = useState(
+    typeof profile.priorCredits === 'number' && profile.priorCredits > 0
+      ? String(profile.priorCredits)
+      : ''
+  );
+  const [savingPrior, setSavingPrior] = useState(false);
+
+  // Quick Upcoming / Planned Semester Course Adder
+  const [showUpcomingForm, setShowUpcomingForm] = useState(false);
+  const [upCode, setUpCode] = useState('');
+  const [upTitle, setUpTitle] = useState('');
+  const [upSemester, setUpSemester] = useState('Next Semester');
+  const [upCredits, setUpCredits] = useState('3');
+  const [savingUpcoming, setSavingUpcoming] = useState(false);
+
+  useEffect(() => {
+    setPriorCgpaInput(
+      typeof profile.priorCgpa === 'number' && profile.priorCgpa > 0
+        ? String(profile.priorCgpa)
+        : ''
+    );
+    setPriorCreditsInput(
+      typeof profile.priorCredits === 'number' && profile.priorCredits > 0
+        ? String(profile.priorCredits)
+        : ''
+    );
+  }, [profile.priorCgpa, profile.priorCredits]);
+
+  const priorSummary = useMemo(
+    () => ({
+      priorCgpa: Math.max(0, Math.min(4, Number(priorCgpaInput) || 0)),
+      priorCredits: Math.max(0, Math.min(400, Number(priorCreditsInput) || 0)),
+    }),
+    [priorCgpaInput, priorCreditsInput]
+  );
+
   const scaleEntries = useMemo(() => getScaleEntries(scale), [scale]);
-  const actualReport = useMemo(() => computeGpaReport(courses, scale), [courses, scale]);
+  const actualReport = useMemo(
+    () => computeGpaReport(courses, scale, undefined, priorSummary),
+    [courses, priorSummary, scale]
+  );
   const projectedReport = useMemo(
-    () => computeGpaReport(courses, scale, whatIfGrades),
-    [courses, scale, whatIfGrades]
+    () => computeGpaReport(courses, scale, whatIfGrades, priorSummary),
+    [courses, priorSummary, scale, whatIfGrades]
   );
 
   const targetCalc = useMemo(() => {
@@ -44,10 +90,54 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
       displayName: profile.displayName,
       gradingScale: nextScale,
       weeklyGoalMinutes: profile.weeklyGoalMinutes,
+      priorCgpa: priorSummary.priorCgpa,
+      priorCredits: priorSummary.priorCredits,
     });
     onNotify(
       `Switched grading scale to ${nextScale === 'bd' ? 'Bangladesh 4.00' : 'US 4.0'}.`
     );
+  };
+
+  const handleSavePriorRecord = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingPrior(true);
+    try {
+      await updateUserPreferences(profile.uid, {
+        displayName: profile.displayName,
+        gradingScale: scale,
+        weeklyGoalMinutes: profile.weeklyGoalMinutes,
+        priorCgpa: priorSummary.priorCgpa,
+        priorCredits: priorSummary.priorCredits,
+      });
+      onNotify(
+        `Saved old semesters record (${priorSummary.priorCgpa.toFixed(2)} CGPA across ${priorSummary.priorCredits} credits).`
+      );
+    } finally {
+      setSavingPrior(false);
+    }
+  };
+
+  const handleAddUpcomingCourse = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!upCode.trim() || !upTitle.trim()) return;
+    setSavingUpcoming(true);
+    try {
+      await saveCourse(profile.uid, {
+        code: upCode.trim().toUpperCase(),
+        title: upTitle.trim(),
+        semester: upSemester.trim() || 'Upcoming',
+        credits: Math.max(0.5, Math.min(20, Number(upCredits) || 3)),
+        gradeLetter: '',
+        isCompleted: false,
+        color: '#2563EB',
+      });
+      setUpCode('');
+      setUpTitle('');
+      setShowUpcomingForm(false);
+      onNotify('Added upcoming course. Pick a What-If grade below to project your new CGPA.');
+    } finally {
+      setSavingUpcoming(false);
+    }
   };
 
   const handleCommitRealGrade = async (course: Course, letter: string) => {
@@ -61,6 +151,8 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
         gradeLetter: letter,
         isCompleted: Boolean(letter),
         color: course.color,
+        midtermScore: course.midtermScore,
+        midtermMax: course.midtermMax,
       },
       course.id
     );
@@ -74,11 +166,11 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
-            CGPA, Target & What-If Projections
+            CGPA, Old Semesters &amp; Upcoming Projections
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            Private to your account — friends never see your grades or CGPA.
+            Private to your account — combines saved prior semesters with current &amp; upcoming courses.
           </p>
         </div>
 
@@ -108,27 +200,91 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
         </div>
       </div>
 
+      {/* Persisted Prior / Old Semesters Record */}
+      <form
+        onSubmit={(e) => void handleSavePriorRecord(e)}
+        className="glass-panel rounded-xl p-5 flex flex-col lg:flex-row lg:items-end justify-between gap-4"
+      >
+        <div className="flex items-start gap-3">
+          <History className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              Old / Previous Semesters Record (Remembered Across Sessions)
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Enter your existing CGPA &amp; completed credits from earlier semesters so every new or upcoming course counts accurately.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3 shrink-0">
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+              Old CGPA
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              max="4"
+              value={priorCgpaInput}
+              onChange={(e) => setPriorCgpaInput(e.target.value)}
+              placeholder="e.g. 3.45"
+              className="w-28 px-3 py-1.5 text-sm font-mono tabular-nums bg-white/80 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+              Old Credits
+            </label>
+            <input
+              type="number"
+              step="0.5"
+              min="0"
+              max="400"
+              value={priorCreditsInput}
+              onChange={(e) => setPriorCreditsInput(e.target.value)}
+              placeholder="e.g. 60"
+              className="w-28 px-3 py-1.5 text-sm font-mono tabular-nums bg-white/80 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 rounded-lg"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={savingPrior}
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-60 whitespace-nowrap"
+          >
+            <Save className="w-3.5 h-3.5" />
+            {savingPrior ? 'Saving...' : 'Remember Old CGPA'}
+          </button>
+        </div>
+      </form>
+
       {/* Top Metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="glass-panel rounded-xl p-5">
-          <span className="text-xs text-slate-500 dark:text-slate-400">Cumulative CGPA</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            Cumulative CGPA (Old + Current)
+          </span>
           <div className="mt-2 font-mono text-3xl font-semibold tabular-nums text-slate-900 dark:text-slate-50">
             {actualReport.completedCredits > 0 ? actualReport.cgpa.toFixed(2) : '—'}
           </div>
           <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
-            {actualReport.completedCredits} completed credits
+            {actualReport.completedCredits} total credits
+            {actualReport.priorCredits > 0 ? ` (${actualReport.priorCredits} old + ${actualReport.completedCredits - actualReport.priorCredits} new)` : ''}
           </span>
         </div>
 
         <div className="glass-panel rounded-xl p-5">
-          <span className="text-xs text-slate-500 dark:text-slate-400">What-If Projected CGPA</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            Projected CGPA (with Upcoming What-If)
+          </span>
           <div className="mt-2 font-mono text-3xl font-semibold tabular-nums text-blue-600 dark:text-blue-400">
             {projectedReport.completedCredits > 0 ? projectedReport.cgpa.toFixed(2) : '—'}
           </div>
           <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
             {Object.keys(whatIfGrades).length > 0
-              ? `${cgpaDelta >= 0 ? '+' : ''}${cgpaDelta.toFixed(2)} vs actual (${projectedReport.completedCredits} cr)`
-              : 'Adjust grades below to simulate'}
+              ? `${cgpaDelta >= 0 ? '+' : ''}${cgpaDelta.toFixed(2)} change (${projectedReport.completedCredits} cr)`
+              : 'Pick grades on upcoming courses below'}
           </span>
         </div>
 
@@ -222,12 +378,22 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
             <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
               Semester SGPA Breakdown
             </h3>
-            {actualReport.semesters.length === 0 ? (
+            {actualReport.priorCredits === 0 && actualReport.semesters.length === 0 ? (
               <p className="text-xs text-slate-500">
-                Assign grades to completed courses to see SGPA per semester.
+                Save your prior CGPA above or assign grades to semester courses to see SGPA breakdown.
               </p>
             ) : (
               <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                {actualReport.priorCredits > 0 && (
+                  <div className="py-2 flex items-center justify-between text-sm">
+                    <span className="text-slate-700 dark:text-slate-300">
+                      Old Semesters (Saved) · {actualReport.priorCredits} cr
+                    </span>
+                    <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                      {actualReport.priorCgpa.toFixed(2)}
+                    </span>
+                  </div>
+                )}
                 {actualReport.semesters.map((sem) => (
                   <div
                     key={sem.semester}
@@ -248,26 +414,85 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
 
         {/* Course Grades & What-If Simulator */}
         <div className="lg:col-span-7 glass-panel rounded-xl overflow-hidden flex flex-col">
-          <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                Course Grades & What-If Projection
+                Current &amp; Upcoming Semester Projections
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Simulate hypothetical grades or save official completed grades.
+                Simulate grades for upcoming semesters or commit official grades.
               </p>
             </div>
-            {Object.keys(whatIfGrades).length > 0 && (
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setWhatIfGrades({})}
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-blue-600"
+                onClick={() => setShowUpcomingForm((v) => !v)}
+                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap"
               >
-                <RotateCcw className="w-3.5 h-3.5" />
-                Reset What-If
+                <Plus className="w-3.5 h-3.5" />
+                Add Upcoming Course
               </button>
-            )}
+              {Object.keys(whatIfGrades).length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setWhatIfGrades({})}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-blue-600"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Reset What-If
+                </button>
+              )}
+            </div>
           </div>
+
+          {showUpcomingForm && (
+            <form
+              onSubmit={(e) => void handleAddUpcomingCourse(e)}
+              className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 grid grid-cols-1 sm:grid-cols-5 gap-2.5"
+            >
+              <input
+                type="text"
+                required
+                value={upCode}
+                onChange={(e) => setUpCode(e.target.value)}
+                placeholder="CSE 410"
+                className="px-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg"
+              />
+              <input
+                type="text"
+                required
+                value={upTitle}
+                onChange={(e) => setUpTitle(e.target.value)}
+                placeholder="Course title"
+                className="sm:col-span-2 px-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg"
+              />
+              <input
+                type="text"
+                value={upSemester}
+                onChange={(e) => setUpSemester(e.target.value)}
+                placeholder="Spring 2027"
+                className="px-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg"
+              />
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0.5"
+                  max="20"
+                  value={upCredits}
+                  onChange={(e) => setUpCredits(e.target.value)}
+                  className="w-16 px-2 py-1.5 text-xs font-mono tabular-nums bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg"
+                />
+                <button
+                  type="submit"
+                  disabled={savingUpcoming}
+                  className="flex-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-60"
+                >
+                  Add
+                </button>
+              </div>
+            </form>
+          )}
 
           {courses.length === 0 ? (
             <div className="p-8 text-center text-sm text-slate-500">
@@ -288,11 +513,25 @@ export const CgpaView: React.FC<CgpaViewProps> = ({ profile, courses, onNotify }
                   {courses.map((course) => {
                     const simGrade = whatIfGrades[course.id] ?? '';
                     const pts = getGradePoints(simGrade || course.gradeLetter, scale);
+                    const midPct = getMidtermPercent(course);
                     return (
                       <tr key={course.id}>
                         <td className="py-3 px-6">
-                          <div className="font-medium text-slate-900 dark:text-slate-100">
-                            {course.code}
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-slate-900 dark:text-slate-100">
+                              {course.code}
+                            </span>
+                            {midPct !== null && (
+                              <span
+                                className={`font-mono text-[11px] tabular-nums ${
+                                  midPct < 60
+                                    ? 'text-red-600 dark:text-red-400 font-semibold'
+                                    : 'text-emerald-600 dark:text-emerald-400'
+                                }`}
+                              >
+                                Mid {midPct}%
+                              </span>
+                            )}
                           </div>
                           <div className="text-xs text-slate-500 truncate max-w-[200px]">
                             {course.semester} · {course.title}

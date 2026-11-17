@@ -12,7 +12,7 @@ import firebaseConfig from './firebase-applet-config.json' with { type: 'json' }
 dotenv.config();
 
 const PORT = 3000;
-const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100 MB limit per file
+const MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB limit per file
 const FILES_ROOT = path.resolve(
   process.cwd(),
   process.env.STUDYTRACKER_FILES || '.studytracker_files'
@@ -118,7 +118,7 @@ async function startServer() {
     upload.single('file')(req, res, (err) => {
       if (err) {
         if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-          res.status(413).json({ error: 'File exceeds the 100 MB per-file limit.' });
+          res.status(413).json({ error: 'File exceeds the 2 GB per-file limit.' });
           return;
         }
         res.status(400).json({ error: err.message || 'File upload failed.' });

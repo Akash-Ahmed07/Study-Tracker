@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   CheckSquare,
   ChevronDown,
   ChevronRight,
+  Play,
   Plus,
   RefreshCw,
   Trash2,
@@ -14,7 +16,7 @@ import {
   saveCourse,
   updateTopic,
 } from '../lib/studyData.ts';
-import { getScaleEntries } from '../lib/gpa.ts';
+import { getMidtermPercent, getScaleEntries } from '../lib/gpa.ts';
 import { Course, GradingScale, SyllabusTopic, TopicStatus } from '../lib/types.ts';
 import {
   getOrCreateStudyTrackerTaskList,
@@ -29,6 +31,7 @@ interface CoursesViewProps {
   topics: SyllabusTopic[];
   accessToken: string | null;
   onRequestAuth: () => void;
+  onStartRecoveryFocus?: (courseId: string) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -41,6 +44,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
   topics,
   accessToken,
   onRequestAuth,
+  onStartRecoveryFocus,
   onNotify,
 }) => {
   const [expandedCourseId, setExpandedCourseId] = useState<string | null>(
@@ -55,8 +59,15 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
   const [credits, setCredits] = useState('3');
   const [gradeLetter, setGradeLetter] = useState('');
   const [isCompleted, setIsCompleted] = useState(false);
+  const [midScoreInput, setMidScoreInput] = useState('');
+  const [midMaxInput, setMidMaxInput] = useState('30');
   const [color, setColor] = useState(COURSE_COLORS[0]);
   const [savingCourse, setSavingCourse] = useState(false);
+
+  // Inline midterm editor per course
+  const [editingMidCourseId, setEditingMidCourseId] = useState<string | null>(null);
+  const [editMidScore, setEditMidScore] = useState('');
+  const [editMidMax, setEditMidMax] = useState('30');
 
   // Add Topic inputs keyed by courseId
   const [newTopicTitle, setNewTopicTitle] = useState<Record<string, string>>({});
@@ -77,6 +88,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
     if (!code.trim() || !title.trim()) return;
     setSavingCourse(true);
     try {
+      const hasMid = midScoreInput.trim() !== '' && Number(midMaxInput) > 0;
       const id = await saveCourse(uid, {
         code: code.trim().toUpperCase(),
         title: title.trim(),
@@ -85,10 +97,18 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
         gradeLetter: isCompleted ? gradeLetter : '',
         isCompleted,
         color,
+        ...(hasMid
+          ? {
+              midtermScore: Math.max(0, Number(midScoreInput) || 0),
+              midtermMax: Math.max(1, Number(midMaxInput) || 30),
+            }
+          : {}),
       });
       setCode('');
       setTitle('');
       setGradeLetter('');
+      setMidScoreInput('');
+      setMidMaxInput('30');
       setIsCompleted(false);
       setShowAddCourse(false);
       setExpandedCourseId(id);
@@ -96,6 +116,33 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
     } finally {
       setSavingCourse(false);
     }
+  };
+
+  const handleSaveMidterm = async (course: Course) => {
+    const score = Math.max(0, Number(editMidScore) || 0);
+    const max = Math.max(1, Number(editMidMax) || 30);
+    await saveCourse(
+      uid,
+      {
+        code: course.code,
+        title: course.title,
+        semester: course.semester,
+        credits: course.credits,
+        gradeLetter: course.gradeLetter,
+        isCompleted: course.isCompleted,
+        color: course.color,
+        midtermScore: score,
+        midtermMax: max,
+      },
+      course.id
+    );
+    setEditingMidCourseId(null);
+    const pct = Math.round((score / max) * 100);
+    onNotify(
+      pct < 60
+        ? `Saved midterm (${pct}%) for ${course.code}. Recovery study reminder activated!`
+        : `Saved midterm mark (${score}/${max} · ${pct}%) for ${course.code}.`
+    );
   };
 
   const handleAddTopic = async (courseId: string) => {
@@ -320,6 +367,34 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                 </select>
               </div>
             )}
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Midterm Score (optional)
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="1000"
+                  value={midScoreInput}
+                  onChange={(e) => setMidScoreInput(e.target.value)}
+                  placeholder="Score"
+                  className="w-full px-3 py-2 text-sm font-mono tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
+                />
+                <span className="text-xs text-slate-400">/</span>
+                <input
+                  type="number"
+                  step="1"
+                  min="1"
+                  max="1000"
+                  value={midMaxInput}
+                  onChange={(e) => setMidMaxInput(e.target.value)}
+                  placeholder="Max"
+                  className="w-24 px-3 py-2 text-sm font-mono tabular-nums bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
+                />
+              </div>
+            </div>
           </div>
           <div className="flex justify-end gap-3">
             <button
@@ -366,6 +441,8 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
             const doingCount = cTopics.filter((t) => t.status === 'doing').length;
             const pct = cTopics.length > 0 ? Math.round((doneCount / cTopics.length) * 100) : 0;
             const isExpanded = expandedCourseId === course.id;
+            const midPct = getMidtermPercent(course);
+            const isLowMid = midPct !== null && midPct < 60 && !course.isCompleted;
 
             return (
               <div
@@ -384,7 +461,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                       <ChevronRight className="w-4 h-4 text-slate-400 mt-1 shrink-0" />
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2.5">
+                      <div className="flex items-center gap-2.5 flex-wrap">
                         <span
                           className="w-2.5 h-2.5 rounded-xs shrink-0"
                           style={{ backgroundColor: course.color || '#2563EB' }}
@@ -392,6 +469,17 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                         <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100 truncate">
                           {course.code} — {course.title}
                         </h3>
+                        {midPct !== null && (
+                          <span
+                            className={`text-xs font-mono tabular-nums px-2 py-0.5 rounded-md ${
+                              isLowMid
+                                ? 'bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
+                                : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                            }`}
+                          >
+                            Mid: {course.midtermScore}/{course.midtermMax} ({midPct}%)
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 tabular-nums">
                         {course.semester} · {course.credits} credits · {doneCount}/{cTopics.length} topics done
@@ -400,11 +488,17 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                           ? ` · Grade ${course.gradeLetter} (private)`
                           : ''}
                       </p>
+                      {isLowMid && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                          <span>Midterm below 60% — study daily to recover before finals.</span>
+                        </div>
+                      )}
                     </div>
                   </button>
 
-                  <div className="flex items-center gap-4 shrink-0">
-                    <div className="w-36 hidden sm:block">
+                  <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                    <div className="w-32 hidden sm:block">
                       <div className="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1 tabular-nums">
                         <span>Syllabus</span>
                         <span className="font-mono">{pct}%</span>
@@ -416,6 +510,39 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                         />
                       </div>
                     </div>
+
+                    {isLowMid && onStartRecoveryFocus && (
+                      <button
+                        type="button"
+                        onClick={() => onStartRecoveryFocus(course.id)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg whitespace-nowrap"
+                      >
+                        <Play className="w-3 h-3" />
+                        Study Now
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (editingMidCourseId === course.id) {
+                          setEditingMidCourseId(null);
+                        } else {
+                          setEditingMidCourseId(course.id);
+                          setEditMidScore(
+                            typeof course.midtermScore === 'number' ? String(course.midtermScore) : ''
+                          );
+                          setEditMidMax(
+                            typeof course.midtermMax === 'number' && course.midtermMax > 0
+                              ? String(course.midtermMax)
+                              : '30'
+                          );
+                        }
+                      }}
+                      className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg whitespace-nowrap"
+                    >
+                      {midPct !== null ? 'Edit Mid' : '+ Mid Mark'}
+                    </button>
 
                     <button
                       type="button"
@@ -429,7 +556,7 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors whitespace-nowrap"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
-                      Sync Google Tasks
+                      Sync Tasks
                     </button>
 
                     <button
@@ -442,6 +569,49 @@ export const CoursesView: React.FC<CoursesViewProps> = ({
                     </button>
                   </div>
                 </div>
+
+                {editingMidCourseId === course.id && (
+                  <div className="px-5 pb-4 pt-1 flex flex-wrap items-center gap-2 border-t border-slate-100 dark:border-slate-800 bg-amber-50/40 dark:bg-amber-950/10">
+                    <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                      Midterm Score for {course.code}:
+                    </span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      max="1000"
+                      value={editMidScore}
+                      onChange={(e) => setEditMidScore(e.target.value)}
+                      placeholder="Your mark"
+                      className="w-24 px-2.5 py-1 text-xs font-mono tabular-nums bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md"
+                    />
+                    <span className="text-xs text-slate-400">out of</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      max="1000"
+                      value={editMidMax}
+                      onChange={(e) => setEditMidMax(e.target.value)}
+                      placeholder="30"
+                      className="w-20 px-2.5 py-1 text-xs font-mono tabular-nums bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveMidterm(course)}
+                      className="px-3 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md"
+                    >
+                      Save Mark
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingMidCourseId(null)}
+                      className="px-2.5 py-1 text-xs text-slate-500"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
 
                 {isExpanded && (
                   <div className="border-t border-slate-200 dark:border-slate-800 p-5 bg-slate-50/60 dark:bg-slate-950/40 space-y-4">

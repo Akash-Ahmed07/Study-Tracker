@@ -10,6 +10,8 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Sun,
+  Moon,
   Users,
 } from 'lucide-react';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -22,6 +24,8 @@ interface SignInViewProps {
   isSigningIn: boolean;
   errorMessage?: string | null;
   pendingInviteCode?: string | null;
+  darkMode?: boolean;
+  onToggleDarkMode?: () => void;
   onOpenLegal?: (mode: 'privacy' | 'terms') => void;
 }
 
@@ -36,6 +40,8 @@ export const SignInView: React.FC<SignInViewProps> = ({
   isSigningIn,
   errorMessage,
   pendingInviteCode,
+  darkMode = false,
+  onToggleDarkMode,
   onOpenLegal,
 }) => {
   // Public Guest Focus Timer (works without login!)
@@ -85,16 +91,26 @@ export const SignInView: React.FC<SignInViewProps> = ({
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 via-blue-50/40 to-slate-200 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 text-slate-900 dark:text-slate-100 flex flex-col justify-between relative overflow-x-hidden">
-      <AmbientBubbles mode="subtle" darkMode={false} />
+      <AmbientBubbles mode="subtle" darkMode={darkMode} />
 
       <header className="w-full max-w-6xl mx-auto px-6 py-5 flex items-center justify-between border-b border-white/50 dark:border-slate-800/80 relative z-10 backdrop-blur-md">
         <span className="font-display text-lg font-bold tracking-tight whitespace-nowrap shrink-0">
           Study Tracker
         </span>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           <span className="hidden sm:inline text-xs text-slate-500 dark:text-slate-400">
             University Academic Workspace
           </span>
+          {onToggleDarkMode && (
+            <button
+              type="button"
+              onClick={onToggleDarkMode}
+              className="p-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 rounded-lg transition-colors"
+              aria-label="Toggle color theme"
+            >
+              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+          )}
           <button
             type="button"
             onClick={onSignIn}
@@ -229,7 +245,7 @@ export const SignInView: React.FC<SignInViewProps> = ({
                 />
               </div>
               <div className="px-2 pt-3 pb-1 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-300">
-                <span>Private CGPA · 100 MB PDFs · Real-Time Study Groups</span>
+                <span>Private CGPA · 2 GB Drive PDFs · Real-Time Study Groups</span>
                 <span className="font-mono text-blue-600 dark:text-blue-400">
                   Drive · Gmail · Tasks · Forms
                 </span>
@@ -462,7 +478,7 @@ export const SignInView: React.FC<SignInViewProps> = ({
           <div className="glass-panel rounded-xl p-5 space-y-2">
             <FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Notes, 100 MB PDFs & Study Groups
+              Notes, 2 GB Drive PDFs &amp; Study Groups
             </h3>
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
               Write dot-terminated notes, import/export with Google Drive, and share PDFs inside WhatsApp-style course study groups.
