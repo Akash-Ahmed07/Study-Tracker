@@ -1,0 +1,6 @@
+{
+  "name": "Study Tracker",
+  "description": "University study tracker for courses, syllabus progress, live timers, Bangladesh & US CGPA projections, 100 MB course notes and files, Google Workspace sync, and privacy-isolated friend study groups.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

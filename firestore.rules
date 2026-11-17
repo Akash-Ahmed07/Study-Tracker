@@ -1,0 +1,661 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function pairDocId(uid1, uid2) {
+      return uid1 < uid2 ? uid1 + '_' + uid2 : uid2 + '_' + uid1;
+    }
+
+    function isFriend(otherUid) {
+      return isSignedIn() &&
+        isValidId(otherUid) &&
+        exists(/databases/$(database)/documents/friendships/$(pairDocId(request.auth.uid, otherUid)));
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        request.auth.token.email == 'groweasy25@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Entity validators
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'gradingScale', 'weeklyGoalMinutes', 'friendCode', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'gradingScale', 'weeklyGoalMinutes', 'friendCode', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.gradingScale in ['bd', 'us']
+        && data.weeklyGoalMinutes is number && data.weeklyGoalMinutes >= 30 && data.weeklyGoalMinutes <= 10080
+        && data.friendCode is string && data.friendCode.size() >= 4 && data.friendCode.size() <= 24 && data.friendCode.matches('^[A-Z0-9\\-]+$')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCourse(data, userId) {
+      return data.keys().hasAll(['userId', 'code', 'title', 'semester', 'credits', 'gradeLetter', 'isCompleted', 'color', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'code', 'title', 'semester', 'credits', 'gradeLetter', 'isCompleted', 'color', 'createdAt', 'updatedAt'])
+        && data.userId == userId
+        && data.userId == request.auth.uid
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 32
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.semester is string && data.semester.size() >= 1 && data.semester.size() <= 40
+        && data.credits is number && data.credits > 0 && data.credits <= 20
+        && data.gradeLetter is string && data.gradeLetter.size() <= 8
+        && data.isCompleted is bool
+        && data.color is string && data.color.size() >= 1 && data.color.size() <= 24
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTopic(data, userId) {
+      return data.keys().hasAll(['userId', 'courseId', 'title', 'status', 'dueDate', 'googleTaskId', 'sortOrder', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'courseId', 'title', 'status', 'dueDate', 'googleTaskId', 'sortOrder', 'createdAt', 'updatedAt'])
+        && data.userId == userId
+        && data.userId == request.auth.uid
+        && isValidId(data.courseId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.status in ['todo', 'doing', 'done']
+        && data.dueDate is string && data.dueDate.size() <= 32
+        && data.googleTaskId is string && data.googleTaskId.size() <= 128
+        && data.sortOrder is number && data.sortOrder >= 0 && data.sortOrder <= 100000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSession(data, userId) {
+      return data.keys().hasAll(['userId', 'courseId', 'courseCode', 'topicId', 'durationMinutes', 'startedAt', 'endedAt', 'source', 'groupSessionId', 'note', 'createdAt'])
+        && data.keys().hasOnly(['userId', 'courseId', 'courseCode', 'topicId', 'durationMinutes', 'startedAt', 'endedAt', 'source', 'groupSessionId', 'note', 'createdAt'])
+        && data.userId == userId
+        && data.userId == request.auth.uid
+        && data.courseId is string && data.courseId.size() <= 128
+        && data.courseCode is string && data.courseCode.size() <= 32
+        && data.topicId is string && data.topicId.size() <= 128
+        && data.durationMinutes is number && data.durationMinutes >= 1 && data.durationMinutes <= 1440
+        && data.startedAt is string && data.startedAt.size() >= 1 && data.startedAt.size() <= 40
+        && data.endedAt is string && data.endedAt.size() >= 1 && data.endedAt.size() <= 40
+        && data.source in ['timer', 'manual', 'group']
+        && data.groupSessionId is string && data.groupSessionId.size() <= 128
+        && data.note is string && data.note.size() <= 500
+        && data.createdAt is timestamp;
+    }
+
+    function isValidNote(data, userId) {
+      return data.keys().hasAll(['userId', 'courseId', 'courseCode', 'topicId', 'topicTitle', 'title', 'kind', 'textContent', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'isShared', 'driveFileId', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'courseId', 'courseCode', 'topicId', 'topicTitle', 'title', 'kind', 'textContent', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'isShared', 'driveFileId', 'createdAt', 'updatedAt'])
+        && data.userId == userId
+        && data.userId == request.auth.uid
+        && data.courseId is string && data.courseId.size() <= 128
+        && data.courseCode is string && data.courseCode.size() <= 32
+        && data.topicId is string && data.topicId.size() <= 128
+        && data.topicTitle is string && data.topicTitle.size() <= 160
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.kind in ['text', 'file']
+        && data.textContent is string && data.textContent.size() <= 50000
+        && data.originalFilename is string && data.originalFilename.size() <= 240
+        && data.mimeType is string && data.mimeType.size() <= 120
+        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 104857600
+        && data.storageKey is string && data.storageKey.size() <= 240
+        && data.isShared is bool
+        && data.driveFileId is string && data.driveFileId.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPublicProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'friendCode', 'weeklyMinutes', 'streakDays', 'weeklyGoalMinutes', 'courseProgress', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'friendCode', 'weeklyMinutes', 'streakDays', 'weeklyGoalMinutes', 'courseProgress', 'updatedAt'])
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.friendCode is string && data.friendCode.size() >= 4 && data.friendCode.size() <= 24 && data.friendCode.matches('^[A-Z0-9\\-]+$')
+        && data.weeklyMinutes is number && data.weeklyMinutes >= 0 && data.weeklyMinutes <= 10080
+        && data.streakDays is number && data.streakDays >= 0 && data.streakDays <= 3650
+        && data.weeklyGoalMinutes is number && data.weeklyGoalMinutes >= 30 && data.weeklyGoalMinutes <= 10080
+        && data.courseProgress is list && data.courseProgress.size() <= 20
+        && (data.courseProgress.size() == 0 || data.courseProgress[0] is map)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFriendCodeLookup(data, code) {
+      return data.keys().hasAll(['uid', 'displayName', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'createdAt'])
+        && data.uid == request.auth.uid
+        && code.matches('^[A-Z0-9\\-]+$')
+        && code.size() >= 4 && code.size() <= 24
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.createdAt is timestamp;
+    }
+
+    function isValidEmailLookup(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'friendCode', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'friendCode', 'createdAt'])
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.friendCode is string && data.friendCode.size() >= 4 && data.friendCode.size() <= 24 && data.friendCode.matches('^[A-Z0-9\\-]+$')
+        && data.createdAt is timestamp;
+    }
+
+    function isValidFriendRequest(data) {
+      return data.keys().hasAll(['fromUid', 'fromName', 'toUid', 'toName', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['fromUid', 'fromName', 'toUid', 'toName', 'status', 'createdAt', 'updatedAt'])
+        && isValidId(data.fromUid)
+        && isValidId(data.toUid)
+        && data.fromUid != data.toUid
+        && data.fromName is string && data.fromName.size() >= 1 && data.fromName.size() <= 100
+        && data.toName is string && data.toName.size() >= 1 && data.toName.size() <= 100
+        && data.status in ['pending', 'accepted', 'declined']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFriendship(data, pairId) {
+      return data.keys().hasAll(['uidA', 'uidB', 'memberUids', 'requestId', 'createdAt'])
+        && data.keys().hasOnly(['uidA', 'uidB', 'memberUids', 'requestId', 'createdAt'])
+        && isValidId(data.uidA)
+        && isValidId(data.uidB)
+        && data.uidA < data.uidB
+        && pairId == data.uidA + '_' + data.uidB
+        && data.memberUids is list && data.memberUids.size() == 2
+        && data.memberUids[0] == data.uidA && data.memberUids[1] == data.uidB
+        && isValidId(data.requestId)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidGroupSession(data) {
+      return data.keys().hasAll(['hostUid', 'hostName', 'invitedUid', 'courseCode', 'topicTitle', 'durationMinutes', 'status', 'participantUids', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['hostUid', 'hostName', 'invitedUid', 'courseCode', 'topicTitle', 'durationMinutes', 'status', 'participantUids', 'createdAt', 'updatedAt'])
+        && isValidId(data.hostUid)
+        && isValidId(data.invitedUid)
+        && data.hostUid != data.invitedUid
+        && data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 100
+        && data.courseCode is string && data.courseCode.size() >= 1 && data.courseCode.size() <= 32
+        && data.topicTitle is string && data.topicTitle.size() >= 1 && data.topicTitle.size() <= 160
+        && data.durationMinutes is number && data.durationMinutes >= 1 && data.durationMinutes <= 600
+        && data.status in ['invited', 'active', 'completed']
+        && data.participantUids is list && data.participantUids.size() >= 1 && data.participantUids.size() <= 10
+        && data.participantUids[0] is string
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSharedNote(data) {
+      return data.keys().hasAll(['ownerUid', 'ownerName', 'sourceNoteId', 'courseCode', 'title', 'kind', 'textContent', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'allowedFriendUids', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerUid', 'ownerName', 'sourceNoteId', 'courseCode', 'title', 'kind', 'textContent', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'allowedFriendUids', 'createdAt', 'updatedAt'])
+        && data.ownerUid == request.auth.uid
+        && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 100
+        && isValidId(data.sourceNoteId)
+        && data.courseCode is string && data.courseCode.size() <= 32
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.kind in ['text', 'file']
+        && data.textContent is string && data.textContent.size() <= 50000
+        && data.originalFilename is string && data.originalFilename.size() <= 240
+        && data.mimeType is string && data.mimeType.size() <= 120
+        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 104857600
+        && data.storageKey is string && data.storageKey.size() <= 240
+        && data.allowedFriendUids is list && data.allowedFriendUids.size() <= 25
+        && (data.allowedFriendUids.size() == 0 || data.allowedFriendUids[0] is string)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRole(data, adminUid) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'email', 'createdAt'])
+        && data.uid == adminUid
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.createdAt is timestamp;
+    }
+
+    function isValidFeatureFormConfig(data) {
+      return data.keys().hasAll(['formId', 'formTitle', 'responderUri', 'updatedByUid', 'updatedAt'])
+        && data.keys().hasOnly(['formId', 'formTitle', 'responderUri', 'updatedByUid', 'updatedAt'])
+        && data.formId is string && data.formId.size() <= 128
+        && (data.formId == '' || isValidId(data.formId))
+        && data.formTitle is string && data.formTitle.size() >= 1 && data.formTitle.size() <= 160
+        && data.responderUri is string && data.responderUri.size() <= 500
+        && isValidId(data.updatedByUid)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFeatureRequest(data) {
+      return data.keys().hasAll(['authorUid', 'authorName', 'authorEmail', 'category', 'title', 'description', 'status', 'adminNote', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['authorUid', 'authorName', 'authorEmail', 'category', 'title', 'description', 'status', 'adminNote', 'createdAt', 'updatedAt'])
+        && isValidId(data.authorUid)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100
+        && data.authorEmail is string && data.authorEmail.size() <= 200
+        && data.category in ['courses', 'timer', 'notes', 'cgpa', 'friends', 'workspace', 'other']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 2000
+        && data.status in ['open', 'planned', 'shipped', 'declined']
+        && data.adminNote is string && data.adminNote.size() <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudyGroup(data) {
+      return data.keys().hasAll(['ownerUid', 'ownerName', 'name', 'courseCode', 'groupCode', 'memberUids', 'lastMessageText', 'lastMessageAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerUid', 'ownerName', 'name', 'courseCode', 'groupCode', 'memberUids', 'lastMessageText', 'lastMessageAt', 'createdAt', 'updatedAt'])
+        && isValidId(data.ownerUid)
+        && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 100
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.courseCode is string && data.courseCode.size() <= 32
+        && data.groupCode is string && data.groupCode.size() >= 4 && data.groupCode.size() <= 24 && data.groupCode.matches('^[A-Z0-9\\-]+$')
+        && data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 25
+        && data.memberUids[0] is string
+        && data.lastMessageText is string && data.lastMessageText.size() <= 300
+        && data.lastMessageAt is string && data.lastMessageAt.size() <= 40
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudyGroupMessage(data, groupId) {
+      return data.keys().hasAll(['groupId', 'senderUid', 'senderName', 'kind', 'text', 'noteTitle', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'sourceNoteId', 'createdAt'])
+        && data.keys().hasOnly(['groupId', 'senderUid', 'senderName', 'kind', 'text', 'noteTitle', 'originalFilename', 'mimeType', 'sizeBytes', 'storageKey', 'sourceNoteId', 'createdAt'])
+        && data.groupId == groupId
+        && isValidId(data.senderUid)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 100
+        && data.kind in ['text', 'note', 'file']
+        && data.text is string && data.text.size() <= 20000
+        && data.noteTitle is string && data.noteTitle.size() <= 160
+        && data.originalFilename is string && data.originalFilename.size() <= 240
+        && data.mimeType is string && data.mimeType.size() <= 120
+        && data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 104857600
+        && data.storageKey is string && data.storageKey.size() <= 240
+        && data.sourceNoteId is string && data.sourceNoteId.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    function isValidGroupCodeLookup(data, code) {
+      return data.keys().hasAll(['groupId', 'groupName', 'ownerUid', 'createdAt'])
+        && data.keys().hasOnly(['groupId', 'groupName', 'ownerUid', 'createdAt'])
+        && isValidId(data.groupId)
+        && code.matches('^[A-Z0-9\\-]+$')
+        && code.size() >= 4 && code.size() <= 24
+        && data.groupName is string && data.groupName.size() >= 1 && data.groupName.size() <= 100
+        && isValidId(data.ownerUid)
+        && data.createdAt is timestamp;
+    }
+
+    function isGroupMember(groupId) {
+      return isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/studyGroups/$(groupId)).data.memberUids;
+    }
+
+    // Owner-only private user document & subcollections (Grades, CGPA, Email, Notes, Sessions)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isVerified() && isValidId(userId) && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(userId) && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().friendCode == existing().friendCode
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'gradingScale', 'weeklyGoalMinutes', 'updatedAt']);
+      allow delete: if false;
+
+      match /courses/{courseId} {
+        allow get: if isValidId(userId) && isValidId(courseId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId);
+        allow create: if isVerified() && isValidId(userId) && isValidId(courseId) && isOwner(userId)
+          && isValidCourse(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(userId) && isValidId(courseId) && isOwner(userId)
+          && isValidCourse(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['code', 'title', 'semester', 'credits', 'gradeLetter', 'isCompleted', 'color', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(userId) && isValidId(courseId) && isOwner(userId);
+      }
+
+      match /topics/{topicId} {
+        allow get: if isValidId(userId) && isValidId(topicId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId);
+        allow create: if isVerified() && isValidId(userId) && isValidId(topicId) && isOwner(userId)
+          && isValidTopic(incoming(), userId)
+          && exists(/databases/$(database)/documents/users/$(userId)/courses/$(incoming().courseId))
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(userId) && isValidId(topicId) && isOwner(userId)
+          && isValidTopic(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().courseId == existing().courseId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'status', 'dueDate', 'googleTaskId', 'sortOrder', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(userId) && isValidId(topicId) && isOwner(userId);
+      }
+
+      match /sessions/{sessionId} {
+        allow get: if isValidId(userId) && isValidId(sessionId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId);
+        allow create: if isVerified() && isValidId(userId) && isValidId(sessionId) && isOwner(userId)
+          && isValidSession(incoming(), userId)
+          && incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(userId) && isValidId(sessionId) && isOwner(userId);
+      }
+
+      match /notes/{noteId} {
+        allow get: if isValidId(userId) && isValidId(noteId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId);
+        allow create: if isVerified() && isValidId(userId) && isValidId(noteId) && isOwner(userId)
+          && isValidNote(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(userId) && isValidId(noteId) && isOwner(userId)
+          && isValidNote(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().kind == existing().kind
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['courseId', 'courseCode', 'topicId', 'topicTitle', 'title', 'textContent', 'isShared', 'driveFileId', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(userId) && isValidId(noteId) && isOwner(userId);
+      }
+    }
+
+    // Friend-visible public study profiles (strictly NO grades, NO CGPA, NO email)
+    match /userPublicProfiles/{userId} {
+      allow get: if isValidId(userId) && isSignedIn() && (isOwner(userId) || isFriend(userId));
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isVerified() && isValidId(userId) && isOwner(userId)
+        && isValidPublicProfile(incoming(), userId)
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(userId) && isOwner(userId)
+        && isValidPublicProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().friendCode == existing().friendCode
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'weeklyMinutes', 'streakDays', 'weeklyGoalMinutes', 'courseProgress', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Direct lookup tables (get only, no list)
+    match /friendCodes/{code} {
+      allow get: if isSignedIn() && isValidId(code);
+      allow list: if false;
+      allow create: if isVerified() && isValidId(code)
+        && isValidFriendCodeLookup(incoming(), code)
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(code) && existing().uid == request.auth.uid;
+    }
+
+    match /emailLookup/{emailHash} {
+      allow get: if isSignedIn() && isValidId(emailHash);
+      allow list: if false;
+      allow create: if isVerified() && isValidId(emailHash)
+        && isValidEmailLookup(incoming())
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(emailHash) && existing().uid == request.auth.uid;
+    }
+
+    // Friend requests
+    match /friendRequests/{requestId} {
+      allow get: if isValidId(requestId) && isSignedIn() && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid);
+      allow list: if isSignedIn() && (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+      allow create: if isVerified() && isValidId(requestId)
+        && isValidFriendRequest(incoming())
+        && incoming().fromUid == request.auth.uid
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(requestId)
+        && isValidFriendRequest(incoming())
+        && existing().status == 'pending'
+        && existing().toUid == request.auth.uid
+        && incoming().fromUid == existing().fromUid
+        && incoming().fromName == existing().fromName
+        && incoming().toUid == existing().toUid
+        && incoming().toName == existing().toName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().status in ['accepted', 'declined']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isVerified() && isValidId(requestId) && (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid);
+    }
+
+    // Friendships (atomic creation paired with accepted friendRequest)
+    match /friendships/{pairId} {
+      allow get: if isValidId(pairId) && isSignedIn() && (existing().uidA == request.auth.uid || existing().uidB == request.auth.uid);
+      allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+      allow create: if isVerified() && isValidId(pairId)
+        && isValidFriendship(incoming(), pairId)
+        && (incoming().uidA == request.auth.uid || incoming().uidB == request.auth.uid)
+        && incoming().createdAt == request.time
+        && getAfter(/databases/$(database)/documents/friendRequests/$(incoming().requestId)).data.status == 'accepted'
+        && getAfter(/databases/$(database)/documents/friendRequests/$(incoming().requestId)).data.toUid == request.auth.uid
+        && (
+          (getAfter(/databases/$(database)/documents/friendRequests/$(incoming().requestId)).data.fromUid == incoming().uidA
+            && getAfter(/databases/$(database)/documents/friendRequests/$(incoming().requestId)).data.toUid == incoming().uidB)
+          ||
+          (getAfter(/databases/$(database)/documents/friendRequests/$(incoming().requestId)).data.fromUid == incoming().uidB
+            && getAfter(/databases/$(database)/documents/friendRequests/$(incoming().requestId)).data.toUid == incoming().uidA)
+        );
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(pairId) && (existing().uidA == request.auth.uid || existing().uidB == request.auth.uid);
+    }
+
+    // Group study sessions
+    match /groupSessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isSignedIn()
+        && (existing().hostUid == request.auth.uid || existing().invitedUid == request.auth.uid || request.auth.uid in existing().participantUids);
+      allow list: if isSignedIn()
+        && (resource.data.hostUid == request.auth.uid || resource.data.invitedUid == request.auth.uid || request.auth.uid in resource.data.participantUids);
+      allow create: if isVerified() && isValidId(sessionId)
+        && isValidGroupSession(incoming())
+        && incoming().hostUid == request.auth.uid
+        && incoming().status == 'invited'
+        && incoming().participantUids.size() == 1
+        && incoming().participantUids[0] == request.auth.uid
+        && isFriend(incoming().invitedUid)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(sessionId)
+        && isValidGroupSession(incoming())
+        && existing().status != 'completed'
+        && incoming().hostUid == existing().hostUid
+        && incoming().hostName == existing().hostName
+        && incoming().invitedUid == existing().invitedUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (existing().invitedUid == request.auth.uid
+            && existing().status == 'invited'
+            && incoming().status == 'active'
+            && request.auth.uid in incoming().participantUids
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'participantUids', 'updatedAt']))
+          ||
+          (existing().hostUid == request.auth.uid
+            && incoming().status == 'completed'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'durationMinutes', 'updatedAt']))
+        );
+      allow delete: if isVerified() && isValidId(sessionId) && existing().hostUid == request.auth.uid;
+    }
+
+    // Shared notes & file pointers
+    match /sharedNotes/{sharedNoteId} {
+      allow get: if isValidId(sharedNoteId) && isSignedIn()
+        && (existing().ownerUid == request.auth.uid || (request.auth.uid in existing().allowedFriendUids && isFriend(existing().ownerUid)));
+      allow list: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.allowedFriendUids);
+      allow create: if isVerified() && isValidId(sharedNoteId)
+        && isValidSharedNote(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/notes/$(incoming().sourceNoteId))
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(sharedNoteId)
+        && isValidSharedNote(incoming())
+        && existing().ownerUid == request.auth.uid
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().sourceNoteId == existing().sourceNoteId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['courseCode', 'title', 'textContent', 'allowedFriendUids', 'updatedAt']);
+      allow delete: if isVerified() && isValidId(sharedNoteId) && existing().ownerUid == request.auth.uid;
+    }
+
+    // Explicit admin roles
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && isSignedIn() && (isOwner(adminUid) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(adminUid)
+        && isValidAdminRole(incoming(), adminUid)
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(adminUid);
+    }
+
+    // Admin-managed Google Form configuration for Feature Requests
+    match /appConfig/{configId} {
+      allow get: if isValidId(configId) && isSignedIn();
+      allow list: if false;
+      allow create: if isAdmin() && configId == 'featureForm'
+        && isValidFeatureFormConfig(incoming())
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin() && configId == 'featureForm'
+        && isValidFeatureFormConfig(incoming())
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && configId == 'featureForm';
+    }
+
+    // Student feature requests submitted to admin
+    match /featureRequests/{requestId} {
+      allow get: if isValidId(requestId) && isSignedIn()
+        && (existing().authorUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn()
+        && (resource.data.authorUid == request.auth.uid || isAdmin());
+      allow create: if isVerified() && isValidId(requestId)
+        && isValidFeatureRequest(incoming())
+        && incoming().authorUid == request.auth.uid
+        && incoming().status == 'open'
+        && incoming().adminNote == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(requestId)
+        && isValidFeatureRequest(incoming())
+        && incoming().authorUid == existing().authorUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            existing().authorUid == request.auth.uid
+            && existing().status == 'open'
+            && incoming().status == 'open'
+            && incoming().adminNote == existing().adminNote
+            && incoming().diff(existing()).affectedKeys().hasOnly(['category', 'title', 'description', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerified() && isValidId(requestId)
+        && (isAdmin() || (existing().authorUid == request.auth.uid && existing().status == 'open'));
+    }
+
+    // Group invite codes for Notes & PDF sharing groups (get only, zero list)
+    match /groupCodes/{code} {
+      allow get: if isSignedIn() && isValidId(code);
+      allow list: if false;
+      allow create: if isVerified() && isValidId(code)
+        && isValidGroupCodeLookup(incoming(), code)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(code) && existing().ownerUid == request.auth.uid;
+    }
+
+    // WhatsApp-style Study Groups inside Notes & Files
+    match /studyGroups/{groupId} {
+      allow get: if isValidId(groupId) && isSignedIn()
+        && (request.auth.uid in existing().memberUids || exists(/databases/$(database)/documents/groupCodes/$(existing().groupCode)));
+      allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+      allow create: if isVerified() && isValidId(groupId)
+        && isValidStudyGroup(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && request.auth.uid in incoming().memberUids
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(groupId)
+        && isValidStudyGroup(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().groupCode == existing().groupCode
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (request.auth.uid in existing().memberUids
+            && incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'updatedAt']))
+          || (existing().ownerUid == request.auth.uid
+            && incoming().ownerUid in incoming().memberUids
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'courseCode', 'memberUids', 'updatedAt']))
+          || (!(request.auth.uid in existing().memberUids)
+            && request.auth.uid in incoming().memberUids
+            && incoming().memberUids.size() == existing().memberUids.size() + 1
+            && incoming().memberUids.hasAll(existing().memberUids)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']))
+          || (request.auth.uid in existing().memberUids
+            && existing().ownerUid != request.auth.uid
+            && !(request.auth.uid in incoming().memberUids)
+            && existing().memberUids.size() == incoming().memberUids.size() + 1
+            && existing().memberUids.hasAll(incoming().memberUids)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']))
+        );
+      allow delete: if isVerified() && isValidId(groupId) && existing().ownerUid == request.auth.uid;
+
+      match /messages/{messageId} {
+        allow get: if isValidId(groupId) && isValidId(messageId) && isGroupMember(groupId);
+        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow create: if isVerified() && isValidId(groupId) && isValidId(messageId)
+          && isGroupMember(groupId)
+          && isValidStudyGroupMessage(incoming(), groupId)
+          && incoming().senderUid == request.auth.uid
+          && incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(groupId) && isValidId(messageId)
+          && isGroupMember(groupId)
+          && (existing().senderUid == request.auth.uid || get(/databases/$(database)/documents/studyGroups/$(groupId)).data.ownerUid == request.auth.uid);
+      }
+    }
+  }
+}
