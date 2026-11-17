@@ -24,6 +24,7 @@ import {
   query,
   where,
 } from 'firebase/firestore';
+import { Analytics } from '@vercel/analytics/react';
 import { AmbientBubbles, BubbleVibeMode } from './components/AmbientBubbles.tsx';
 import { CgpaView } from './components/CgpaView.tsx';
 import { CommandPalette } from './components/CommandPalette.tsx';
@@ -948,6 +949,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <StudyTrackerWorkspace />
+      <Analytics />
     </ErrorBoundary>
   );
 }
