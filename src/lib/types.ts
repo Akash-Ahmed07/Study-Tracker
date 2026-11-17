@@ -27,6 +27,8 @@ export interface UserProfile {
   friendCode: string;
   priorCgpa?: number;
   priorCredits?: number;
+  suspended?: boolean;
+  suspendedReason?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -181,6 +183,15 @@ export interface FeatureFormConfig {
   formId: string;
   formTitle: string;
   responderUri: string;
+  updatedByUid: string;
+  updatedAt?: unknown;
+}
+
+export interface GlobalAnnouncement {
+  enabled: boolean;
+  title: string;
+  message: string;
+  tone: 'info' | 'warning' | 'success';
   updatedByUid: string;
   updatedAt?: unknown;
 }

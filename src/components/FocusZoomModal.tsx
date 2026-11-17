@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowLeft,
   BookOpen,
@@ -172,8 +173,6 @@ export const FocusZoomModal: React.FC<FocusZoomModalProps> = ({
     }
   };
 
-  if (!open) return null;
-
   const targetSeconds =
     timerPreset === 'pomodoro25' ? 25 * 60 : timerPreset === 'deep50' ? 50 * 60 : null;
   const remainingSeconds =
@@ -182,12 +181,18 @@ export const FocusZoomModal: React.FC<FocusZoomModalProps> = ({
   const activeCourse = courses.find((c) => c.id === timerCourseId);
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-gradient-to-br from-slate-100/95 via-blue-50/90 to-slate-200/95 dark:from-slate-950/95 dark:via-slate-900/95 dark:to-slate-950/95 backdrop-blur-xl flex flex-col overflow-hidden"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Zoomed Focus Timer & Notes Reader"
-    >
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.98 }}
+          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+          className="fixed inset-0 z-50 bg-gradient-to-br from-slate-100/95 via-blue-50/90 to-slate-200/95 dark:from-slate-950/95 dark:via-slate-900/95 dark:to-slate-950/95 backdrop-blur-xl flex flex-col overflow-hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Zoomed Focus Timer & Notes Reader"
+        >
       {/* Header Bar */}
       <div className="px-6 py-3.5 border-b border-slate-200/70 dark:border-slate-800/80 glass-panel rounded-none flex items-center justify-between gap-4 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
@@ -577,6 +582,8 @@ export const FocusZoomModal: React.FC<FocusZoomModalProps> = ({
           </div>
         </div>
       </div>
-    </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };

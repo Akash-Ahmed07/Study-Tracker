@@ -52,9 +52,8 @@ service cloud.firestore {
     // Entity validators
     function isValidUserProfile(data, userId) {
       return data.keys().hasAll(['uid', 'displayName', 'email', 'gradingScale', 'weeklyGoalMinutes', 'friendCode', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'email', 'gradingScale', 'weeklyGoalMinutes', 'friendCode', 'priorCgpa', 'priorCredits', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'gradingScale', 'weeklyGoalMinutes', 'friendCode', 'priorCgpa', 'priorCredits', 'suspended', 'suspendedReason', 'createdAt', 'updatedAt'])
         && data.uid == userId
-        && data.uid == request.auth.uid
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
         && data.gradingScale in ['bd', 'us']
@@ -62,6 +61,8 @@ service cloud.firestore {
         && data.friendCode is string && data.friendCode.size() >= 4 && data.friendCode.size() <= 24 && data.friendCode.matches('^[A-Z0-9\\-]+$')
         && (!('priorCgpa' in data) || (data.priorCgpa is number && data.priorCgpa >= 0 && data.priorCgpa <= 4))
         && (!('priorCredits' in data) || (data.priorCredits is number && data.priorCredits >= 0 && data.priorCredits <= 400))
+        && (!('suspended' in data) || (data.suspended is bool))
+        && (!('suspendedReason' in data) || (data.suspendedReason is string && data.suspendedReason.size() <= 300))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -256,6 +257,17 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidAnnouncementConfig(data) {
+      return data.keys().hasAll(['enabled', 'title', 'message', 'tone', 'updatedByUid', 'updatedAt'])
+        && data.keys().hasOnly(['enabled', 'title', 'message', 'tone', 'updatedByUid', 'updatedAt'])
+        && data.enabled is bool
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.message is string && data.message.size() <= 600
+        && data.tone in ['info', 'warning', 'success']
+        && isValidId(data.updatedByUid)
+        && data.updatedAt is timestamp;
+    }
+
     function isValidFeatureRequest(data) {
       return data.keys().hasAll(['authorUid', 'authorName', 'authorEmail', 'category', 'title', 'description', 'status', 'adminNote', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['authorUid', 'authorName', 'authorEmail', 'category', 'title', 'description', 'status', 'adminNote', 'createdAt', 'updatedAt'])
@@ -322,19 +334,27 @@ service cloud.firestore {
 
     // Owner-only private user document & subcollections (Grades, CGPA, Email, Notes, Sessions)
     match /users/{userId} {
-      allow get: if isValidId(userId) && isOwner(userId);
-      allow list: if false;
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
       allow create: if isVerified() && isValidId(userId) && isOwner(userId)
         && isValidUserProfile(incoming(), userId)
+        && incoming().uid == request.auth.uid
+        && !('suspended' in incoming())
+        && !('suspendedReason' in incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerified() && isValidId(userId) && isOwner(userId)
+      allow update: if isVerified() && isValidId(userId)
         && isValidUserProfile(incoming(), userId)
         && incoming().uid == existing().uid
         && incoming().friendCode == existing().friendCode
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'gradingScale', 'weeklyGoalMinutes', 'priorCgpa', 'priorCredits', 'updatedAt']);
+        && (
+          (isOwner(userId)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'gradingScale', 'weeklyGoalMinutes', 'priorCgpa', 'priorCredits', 'updatedAt']))
+          || (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['suspended', 'suspendedReason', 'updatedAt']))
+        );
       allow delete: if false;
 
       match /courses/{courseId} {
@@ -401,8 +421,8 @@ service cloud.firestore {
 
     // Friend-visible public study profiles (strictly NO grades, NO CGPA, NO email)
     match /userPublicProfiles/{userId} {
-      allow get: if isValidId(userId) && isSignedIn() && (isOwner(userId) || isFriend(userId));
-      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow get: if isValidId(userId) && (isAdmin() || (isSignedIn() && (isOwner(userId) || isFriend(userId))));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
       allow create: if isVerified() && isValidId(userId) && isOwner(userId)
         && isValidPublicProfile(incoming(), userId)
         && incoming().updatedAt == request.time;
@@ -553,19 +573,21 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(adminUid);
     }
 
-    // Admin-managed Google Form configuration for Feature Requests
+    // Admin-managed app configuration (Google Form + Global Announcement)
     match /appConfig/{configId} {
       allow get: if isValidId(configId) && isSignedIn();
       allow list: if false;
-      allow create: if isAdmin() && configId == 'featureForm'
-        && isValidFeatureFormConfig(incoming())
-        && incoming().updatedByUid == request.auth.uid
-        && incoming().updatedAt == request.time;
-      allow update: if isAdmin() && configId == 'featureForm'
-        && isValidFeatureFormConfig(incoming())
-        && incoming().updatedByUid == request.auth.uid
-        && incoming().updatedAt == request.time;
-      allow delete: if isAdmin() && configId == 'featureForm';
+      allow create: if isAdmin() && incoming().updatedByUid == request.auth.uid && incoming().updatedAt == request.time
+        && (
+          (configId == 'featureForm' && isValidFeatureFormConfig(incoming()))
+          || (configId == 'announcement' && isValidAnnouncementConfig(incoming()))
+        );
+      allow update: if isAdmin() && incoming().updatedByUid == request.auth.uid && incoming().updatedAt == request.time
+        && (
+          (configId == 'featureForm' && isValidFeatureFormConfig(incoming()))
+          || (configId == 'announcement' && isValidAnnouncementConfig(incoming()))
+        );
+      allow delete: if isAdmin() && (configId == 'featureForm' || configId == 'announcement');
     }
 
     // Student feature requests submitted to admin
@@ -609,14 +631,13 @@ service cloud.firestore {
         && incoming().ownerUid == request.auth.uid
         && incoming().createdAt == request.time;
       allow update: if false;
-      allow delete: if isVerified() && isValidId(code) && existing().ownerUid == request.auth.uid;
+      allow delete: if isVerified() && isValidId(code) && (existing().ownerUid == request.auth.uid || isAdmin());
     }
 
     // WhatsApp-style Study Groups inside Notes & Files
     match /studyGroups/{groupId} {
-      allow get: if isValidId(groupId) && isSignedIn()
-        && (request.auth.uid in existing().memberUids || exists(/databases/$(database)/documents/groupCodes/$(existing().groupCode)));
-      allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+      allow get: if isValidId(groupId) && (isAdmin() || (isSignedIn() && (request.auth.uid in existing().memberUids || exists(/databases/$(database)/documents/groupCodes/$(existing().groupCode)))));
+      allow list: if isAdmin() || (isSignedIn() && request.auth.uid in resource.data.memberUids);
       allow create: if isVerified() && isValidId(groupId)
         && isValidStudyGroup(incoming())
         && incoming().ownerUid == request.auth.uid
@@ -647,11 +668,11 @@ service cloud.firestore {
             && existing().memberUids.hasAll(incoming().memberUids)
             && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']))
         );
-      allow delete: if isVerified() && isValidId(groupId) && existing().ownerUid == request.auth.uid;
+      allow delete: if isVerified() && isValidId(groupId) && (existing().ownerUid == request.auth.uid || isAdmin());
 
       match /messages/{messageId} {
-        allow get: if isValidId(groupId) && isValidId(messageId) && isGroupMember(groupId);
-        allow list: if isValidId(groupId) && isGroupMember(groupId);
+        allow get: if isValidId(groupId) && isValidId(messageId) && (isGroupMember(groupId) || isAdmin());
+        allow list: if isValidId(groupId) && (isGroupMember(groupId) || isAdmin());
         allow create: if isVerified() && isValidId(groupId) && isValidId(messageId)
           && isGroupMember(groupId)
           && isValidStudyGroupMessage(incoming(), groupId)
@@ -659,8 +680,7 @@ service cloud.firestore {
           && incoming().createdAt == request.time;
         allow update: if false;
         allow delete: if isVerified() && isValidId(groupId) && isValidId(messageId)
-          && isGroupMember(groupId)
-          && (existing().senderUid == request.auth.uid || get(/databases/$(database)/documents/studyGroups/$(groupId)).data.ownerUid == request.auth.uid);
+          && (isAdmin() || (isGroupMember(groupId) && (existing().senderUid == request.auth.uid || get(/databases/$(database)/documents/studyGroups/$(groupId)).data.ownerUid == request.auth.uid)));
       }
     }
   }

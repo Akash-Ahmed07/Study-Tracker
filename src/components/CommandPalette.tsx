@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Command, Search, X } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
 import { NavSection } from '../lib/types.ts';
 
 export interface CommandItem {
@@ -122,20 +123,28 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     );
   }, [commands, query]);
 
-  if (!open) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-24 bg-slate-950/60 backdrop-blur-xs p-4"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Command palette"
-    >
-      <div
-        className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 z-50 flex items-start justify-center pt-24 bg-slate-950/60 backdrop-blur-xs p-4"
+          onClick={onClose}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Command palette"
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: -10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.97, y: -8 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
         <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-slate-800">
           <Search className="w-4 h-4 text-slate-400 shrink-0" />
           <input
@@ -193,7 +202,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             ))
           )}
         </div>
-      </div>
-    </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { motion } from 'motion/react';
 import {
   BookOpen,
   Calculator,
@@ -145,7 +146,12 @@ export const SignInView: React.FC<SignInViewProps> = ({
 
         {/* Asymmetric Hero Section with Generated Editorial Study Image */}
         <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
-          <div className="lg:col-span-6 space-y-6">
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+            className="lg:col-span-6 space-y-6"
+          >
             <h1
               className="font-display text-4xl sm:text-5xl font-bold tracking-tight text-slate-900 dark:text-slate-50 leading-tight"
               style={{ textWrap: 'balance' }}
@@ -233,9 +239,14 @@ export const SignInView: React.FC<SignInViewProps> = ({
                 Tip: If sign-in is blocked by popup blockers or a restricted university email, allow popups or use the guest tools below.
               </p>
             </div>
-          </div>
+          </motion.div>
 
-          <div className="lg:col-span-6">
+          <motion.div
+            initial={{ opacity: 0, y: 18, scale: 0.985 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ duration: 0.4, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
+            className="lg:col-span-6"
+          >
             <div className="glass-panel rounded-2xl p-3">
               <div className="relative overflow-hidden rounded-xl aspect-video bg-slate-900">
                 <img
@@ -251,11 +262,16 @@ export const SignInView: React.FC<SignInViewProps> = ({
                 </span>
               </div>
             </div>
-          </div>
+          </motion.div>
         </section>
 
         {/* Guest Study Tools (Immediately usable without logging in) */}
-        <section className="space-y-4">
+        <motion.section
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.36, delay: 0.14, ease: [0.16, 1, 0.3, 1] }}
+          className="space-y-4"
+        >
           <div>
             <h2 className="font-display text-xl font-bold text-slate-900 dark:text-slate-50">
               No-Login Guest Study Tools
@@ -462,7 +478,7 @@ export const SignInView: React.FC<SignInViewProps> = ({
               </div>
             </div>
           </div>
-        </section>
+        </motion.section>
 
         {/* Workspace Feature Overview Cards */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-5">

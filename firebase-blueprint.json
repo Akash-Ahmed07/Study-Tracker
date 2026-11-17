@@ -13,6 +13,8 @@
         "friendCode": { "type": "string", "minLength": 4, "maxLength": 24, "pattern": "^[A-Z0-9\\-]+$" },
         "priorCgpa": { "type": "number" },
         "priorCredits": { "type": "number" },
+        "suspended": { "type": "boolean" },
+        "suspendedReason": { "type": "string", "maxLength": 300 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -229,6 +231,20 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["formId", "formTitle", "responderUri", "updatedByUid", "updatedAt"]
+    },
+    "GlobalAnnouncement": {
+      "title": "GlobalAnnouncement",
+      "description": "Admin-managed site-wide announcement banner shown to signed-in students.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "message": { "type": "string", "maxLength": 600 },
+        "tone": { "type": "string", "enum": ["info", "warning", "success"] },
+        "updatedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["enabled", "title", "message", "tone", "updatedByUid", "updatedAt"]
     },
     "FeatureRequest": {
       "title": "FeatureRequest",

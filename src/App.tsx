@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Analytics } from '@vercel/analytics/react';
+import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import {
   AlertTriangle,
   BookOpen,
@@ -10,6 +11,7 @@ import {
   LayoutDashboard,
   LogOut,
   Maximize2,
+  Megaphone,
   Menu,
   MessageSquarePlus,
   Moon,
@@ -27,6 +29,7 @@ import {
   query,
   where,
 } from 'firebase/firestore';
+import { AdminControlPanel } from './components/AdminControlPanel.tsx';
 import { AmbientBubbles, BubbleVibeMode } from './components/AmbientBubbles.tsx';
 import { CgpaView } from './components/CgpaView.tsx';
 import { CommandPalette } from './components/CommandPalette.tsx';
@@ -56,6 +59,7 @@ import {
   fetchFriendPublicProfiles,
   logStudySession,
   lookupStudentByCodeOrEmail,
+  respondToFriendRequest,
   sendFriendRequest,
   syncPublicProfile,
   syncSharedNotesFriendList,
@@ -66,6 +70,7 @@ import {
   FeatureRequest,
   FriendRequest,
   Friendship,
+  GlobalAnnouncement,
   GroupStudySession,
   isAppAdmin,
   NavSection,
@@ -109,6 +114,7 @@ function StudyTrackerWorkspace() {
   const [studyGroups, setStudyGroups] = useState<StudyGroup[]>([]);
   const [featureFormConfig, setFeatureFormConfig] = useState<FeatureFormConfig | null>(null);
   const [featureRequests, setFeatureRequests] = useState<FeatureRequest[]>([]);
+  const [announcement, setAnnouncement] = useState<GlobalAnnouncement | null>(null);
   const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     const raw = new URLSearchParams(window.location.search).get('invite');
@@ -127,19 +133,37 @@ function StudyTrackerWorkspace() {
     return null;
   }, []);
 
+  const readAdminRouteFromLocation = useCallback((): boolean => {
+    if (typeof window === 'undefined') return false;
+    const path = window.location.pathname.toLowerCase().replace(/\/+$/, '');
+    return path === '/admin-ctrl';
+  }, []);
+
   const [legalMode, setLegalMode] = useState<LegalDocMode | null>(() => readLegalFromLocation());
+  const [adminRouteOpen, setAdminRouteOpen] = useState<boolean>(() => readAdminRouteFromLocation());
 
   useEffect(() => {
-    const onPop = () => setLegalMode(readLegalFromLocation());
+    const onPop = () => {
+      setLegalMode(readLegalFromLocation());
+      setAdminRouteOpen(readAdminRouteFromLocation());
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
-  }, [readLegalFromLocation]);
+  }, [readAdminRouteFromLocation, readLegalFromLocation]);
 
   const openLegalPage = useCallback((mode: LegalDocMode | null) => {
     setLegalMode(mode);
+    setAdminRouteOpen(false);
     if (typeof window !== 'undefined') {
       const targetPath = mode === 'privacy' ? '/privacy' : mode === 'terms' ? '/terms' : '/';
       window.history.pushState({}, '', targetPath);
+    }
+  }, []);
+
+  const setHiddenAdminRoute = useCallback((open: boolean) => {
+    setAdminRouteOpen(open);
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', open ? '/admin-ctrl' : '/');
     }
   }, []);
 
@@ -235,7 +259,7 @@ function StudyTrackerWorkspace() {
     }
   }, [sidebarCollapsed]);
 
-  // Global keyboard shortcuts (Cmd/Ctrl+K or "/" when not in an input)
+  // Global keyboard shortcuts (Cmd/Ctrl+K or "/", plus stealth admin shortcut strictly for verified admin)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -244,6 +268,14 @@ function StudyTrackerWorkspace() {
         target?.tagName === 'TEXTAREA' ||
         target?.tagName === 'SELECT' ||
         target?.isContentEditable;
+
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
+        if (authUser?.emailVerified && isAppAdmin(authUser.email)) {
+          e.preventDefault();
+          setHiddenAdminRoute(!adminRouteOpen);
+        }
+        return;
+      }
 
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
@@ -255,7 +287,7 @@ function StudyTrackerWorkspace() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [adminRouteOpen, authUser, setHiddenAdminRoute]);
 
   // Auth listener
   useEffect(() => {
@@ -420,6 +452,14 @@ function StudyTrackerWorkspace() {
       (err) => handleFirestoreError(err, OperationType.GET, 'appConfig/featureForm')
     );
 
+    const unsubAnnouncement = onSnapshot(
+      doc(db, 'appConfig', 'announcement'),
+      (snap) => {
+        setAnnouncement(snap.exists() ? (snap.data() as GlobalAnnouncement) : null);
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, 'appConfig/announcement')
+    );
+
     const reqQuery = isAppAdmin(authUser.email)
       ? collection(db, 'featureRequests')
       : query(collection(db, 'featureRequests'), where('authorUid', '==', uid));
@@ -482,6 +522,7 @@ function StudyTrackerWorkspace() {
       unsubSharedNotes();
       unsubStudyGroups();
       unsubFormConfig();
+      unsubAnnouncement();
       unsubFeatureRequests();
     };
   }, [authUser]);
@@ -607,6 +648,26 @@ function StudyTrackerWorkspace() {
         setPendingInviteCode(null);
         return;
       }
+      if (friendUids.includes(target.uid)) {
+        notify(`You are already friends with ${target.displayName}.`);
+        setPendingInviteCode(null);
+        setActiveSection('friends');
+        return;
+      }
+      const incomingMatch = incomingRequests.find((r) => r.fromUid === target.uid);
+      if (incomingMatch) {
+        await respondToFriendRequest(incomingMatch, true);
+        notify(`Connected with ${target.displayName}!`);
+        setPendingInviteCode(null);
+        setActiveSection('friends');
+        return;
+      }
+      if (outgoingRequests.some((r) => r.toUid === target.uid)) {
+        notify(`Invite is already pending for ${target.displayName}.`);
+        setPendingInviteCode(null);
+        setActiveSection('friends');
+        return;
+      }
       await sendFriendRequest(profile, target);
       notify(`Friend invite sent to ${target.displayName} (${pendingInviteCode}).`);
       setPendingInviteCode(null);
@@ -684,6 +745,31 @@ function StudyTrackerWorkspace() {
     );
   }
 
+  // Stealth 404 for hidden admin route if visitor is not verified admin
+  if (
+    adminRouteOpen &&
+    (!authUser || !authUser.emailVerified || !isAppAdmin(authUser.email))
+  ) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex items-center justify-center p-6">
+        <div className="glass-panel rounded-2xl p-8 max-w-md w-full text-center space-y-4">
+          <div className="font-mono text-4xl font-bold text-slate-400">404</div>
+          <h1 className="font-display text-xl font-bold">Page not found</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            The requested page could not be located on this server.
+          </p>
+          <button
+            type="button"
+            onClick={() => setHiddenAdminRoute(false)}
+            className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
+          >
+            Return to Study Tracker
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!authUser || !profile) {
     return (
       <SignInView
@@ -695,6 +781,67 @@ function StudyTrackerWorkspace() {
         onToggleDarkMode={() => setDarkMode((v) => !v)}
         onOpenLegal={(m) => openLegalPage(m)}
       />
+    );
+  }
+
+  // Hidden Admin Control Panel (only rendered at /admin-ctrl for verified groweasy25@gmail.com)
+  if (adminRouteOpen && authUser.emailVerified && isAppAdmin(authUser.email)) {
+    return (
+      <>
+        <AdminControlPanel
+          profile={profile}
+          featureRequests={featureRequests}
+          formConfig={featureFormConfig}
+          announcement={announcement}
+          accessToken={accessToken}
+          onRequestAuth={() => void handleConnectWorkspace()}
+          onExitAdmin={() => setHiddenAdminRoute(false)}
+          onNotify={notify}
+        />
+        <AnimatePresence>
+          {toast && (
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              role="status"
+              className="fixed bottom-5 right-5 z-50 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 px-4 py-2.5 rounded-lg text-sm font-medium shadow-lg flex items-center gap-3"
+            >
+              <span>{toast}</span>
+              <button
+                type="button"
+                onClick={() => setToast(null)}
+                className="opacity-70 hover:opacity-100"
+                aria-label="Dismiss message"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </>
+    );
+  }
+
+  if (profile.suspended && !isAppAdmin(authUser.email)) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex items-center justify-center p-6">
+        <div className="glass-panel rounded-2xl p-8 max-w-md w-full text-center space-y-4">
+          <AlertTriangle className="w-10 h-10 text-red-600 mx-auto" />
+          <h1 className="font-display text-xl font-bold">Account Suspended</h1>
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            {profile.suspendedReason || 'Your Study Tracker access has been paused by the site administrator.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Sign Out
+          </button>
+        </div>
+      </div>
     );
   }
 
@@ -771,64 +918,74 @@ function StudyTrackerWorkspace() {
       </aside>
 
       {/* Mobile Drawer */}
-      {mobileMenuOpen && (
-        <div
-          className="fixed inset-0 z-50 lg:hidden bg-slate-950/60 backdrop-blur-xs flex"
-          onClick={() => setMobileMenuOpen(false)}
-        >
-          <aside
-            className="w-64 glass-panel h-full p-5 flex flex-col justify-between border-r border-white/50 dark:border-slate-800/80 rounded-none"
-            onClick={(e) => e.stopPropagation()}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="fixed inset-0 z-50 lg:hidden bg-slate-950/60 backdrop-blur-xs flex"
+            onClick={() => setMobileMenuOpen(false)}
           >
-            <div className="space-y-6">
-              <div className="flex items-center justify-between">
-                <span className="font-display text-lg font-bold">Study Tracker</span>
-                <button
-                  type="button"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="p-1 text-slate-400"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <nav className="space-y-1">
-                {NAV_ITEMS.map((item) => {
-                  const Icon = item.icon;
-                  const isActive = activeSection === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveSection(item.id);
-                        setMobileMenuOpen(false);
-                      }}
-                      className={`w-full px-3 py-2.5 rounded-lg flex items-center gap-3 text-sm font-medium text-left ${
-                        isActive
-                          ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
-                          : 'text-slate-600 dark:text-slate-400'
-                      }`}
-                    >
-                      <Icon className="w-4 h-4 shrink-0" />
-                      <span className="truncate">
-                        {item.num}. {item.label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </nav>
-            </div>
-            <button
-              type="button"
-              onClick={() => void logout()}
-              className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-lg"
+            <motion.aside
+              initial={{ x: -260 }}
+              animate={{ x: 0 }}
+              exit={{ x: -260 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              className="w-64 glass-panel h-full p-5 flex flex-col justify-between border-r border-white/50 dark:border-slate-800/80 rounded-none"
+              onClick={(e) => e.stopPropagation()}
             >
-              <LogOut className="w-3.5 h-3.5" />
-              Sign Out
-            </button>
-          </aside>
-        </div>
-      )}
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <span className="font-display text-lg font-bold">Study Tracker</span>
+                  <button
+                    type="button"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="p-1 text-slate-400"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <nav className="space-y-1">
+                  {NAV_ITEMS.map((item) => {
+                    const Icon = item.icon;
+                    const isActive = activeSection === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveSection(item.id);
+                          setMobileMenuOpen(false);
+                        }}
+                        className={`w-full px-3 py-2.5 rounded-lg flex items-center gap-3 text-sm font-medium text-left ${
+                          isActive
+                            ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
+                            : 'text-slate-600 dark:text-slate-400'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4 shrink-0" />
+                        <span className="truncate">
+                          {item.num}. {item.label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </nav>
+              </div>
+              <button
+                type="button"
+                onClick={() => void logout()}
+                className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-lg"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Sign Out
+              </button>
+            </motion.aside>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Main Content Shell */}
       <div className="flex-1 flex flex-col min-w-0 relative z-10">
@@ -900,6 +1057,27 @@ function StudyTrackerWorkspace() {
 
         {/* Main Viewport */}
         <main className="flex-1 p-6 lg:p-8 max-w-6xl w-full mx-auto">
+          {/* Global Announcement Banner (managed via hidden Admin Control Panel) */}
+          {announcement?.enabled && announcement.message && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`mb-6 p-4 glass-panel rounded-xl flex items-start gap-3 border ${
+                announcement.tone === 'warning'
+                  ? 'border-amber-300/80 dark:border-amber-800/80'
+                  : announcement.tone === 'success'
+                    ? 'border-emerald-300/80 dark:border-emerald-800/80'
+                    : 'border-blue-300/80 dark:border-blue-800/80'
+              }`}
+            >
+              <Megaphone className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+              <div className="text-xs sm:text-sm text-slate-800 dark:text-slate-100">
+                <strong className="mr-1.5">{announcement.title}:</strong>
+                <span>{announcement.message}</span>
+              </div>
+            </motion.div>
+          )}
+
           {/* Persistent Low Midterm Study Reminder (always visible when any incomplete course mid < 60%) */}
           {lowMidCourses.length > 0 && (
             <div className="mb-6 p-4 glass-panel border border-red-200/80 dark:border-red-900/70 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -971,128 +1149,138 @@ function StudyTrackerWorkspace() {
             </div>
           )}
 
-          {activeSection === 'overview' && (
-            <OverviewView
-              profile={profile}
-              courses={courses}
-              topics={topics}
-              sessions={sessions}
-              notes={notes}
-              friendCount={friendProfiles.length}
-              timerRunning={timerRunning}
-              timerSeconds={timerSeconds}
-              timerCourseCode={timerCourseCode}
-              hasWorkspaceToken={Boolean(accessToken)}
-              accessToken={accessToken}
-              bubbleMode={bubbleMode}
-              soundscape={soundscape}
-              soundVolume={soundVolume}
-              onChangeBubbleMode={setBubbleMode}
-              onChangeSoundscape={handleChangeSoundscape}
-              onChangeSoundVolume={handleChangeSoundVolume}
-              onReconnectWorkspace={() => void handleConnectWorkspace()}
-              onStartQuickTimer={handleStartTimer}
-              onStopAndSaveTimer={() => void handleStopAndSaveTimer()}
-              onOpenFocusZoom={() => setFocusZoomOpen(true)}
-              onStartCourseRecoveryFocus={handleStartCourseRecoveryFocus}
-              onNavigate={(sec) => setActiveSection(sec)}
-            />
-          )}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeSection}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            >
+              {activeSection === 'overview' && (
+                <OverviewView
+                  profile={profile}
+                  courses={courses}
+                  topics={topics}
+                  sessions={sessions}
+                  notes={notes}
+                  friendCount={friendProfiles.length}
+                  timerRunning={timerRunning}
+                  timerSeconds={timerSeconds}
+                  timerCourseCode={timerCourseCode}
+                  hasWorkspaceToken={Boolean(accessToken)}
+                  accessToken={accessToken}
+                  bubbleMode={bubbleMode}
+                  soundscape={soundscape}
+                  soundVolume={soundVolume}
+                  onChangeBubbleMode={setBubbleMode}
+                  onChangeSoundscape={handleChangeSoundscape}
+                  onChangeSoundVolume={handleChangeSoundVolume}
+                  onReconnectWorkspace={() => void handleConnectWorkspace()}
+                  onStartQuickTimer={handleStartTimer}
+                  onStopAndSaveTimer={() => void handleStopAndSaveTimer()}
+                  onOpenFocusZoom={() => setFocusZoomOpen(true)}
+                  onStartCourseRecoveryFocus={handleStartCourseRecoveryFocus}
+                  onNavigate={(sec) => setActiveSection(sec)}
+                />
+              )}
 
-          {activeSection === 'courses' && (
-            <CoursesView
-              uid={profile.uid}
-              gradingScale={profile.gradingScale}
-              courses={courses}
-              topics={topics}
-              accessToken={accessToken}
-              onRequestAuth={() => void handleConnectWorkspace()}
-              onStartRecoveryFocus={handleStartCourseRecoveryFocus}
-              onNotify={notify}
-            />
-          )}
+              {activeSection === 'courses' && (
+                <CoursesView
+                  uid={profile.uid}
+                  gradingScale={profile.gradingScale}
+                  courses={courses}
+                  topics={topics}
+                  accessToken={accessToken}
+                  onRequestAuth={() => void handleConnectWorkspace()}
+                  onStartRecoveryFocus={handleStartCourseRecoveryFocus}
+                  onNotify={notify}
+                />
+              )}
 
-          {activeSection === 'sessions' && (
-            <SessionsView
-              profile={profile}
-              courses={courses}
-              topics={topics}
-              sessions={sessions}
-              timerRunning={timerRunning}
-              timerSeconds={timerSeconds}
-              timerPreset={timerPreset}
-              timerCourseId={timerCourseId}
-              timerTopicId={timerTopicId}
-              onSetTimerPreset={setTimerPreset}
-              onSetTimerTarget={(cId, tId) => {
-                setTimerCourseId(cId);
-                setTimerTopicId(tId);
-              }}
-              onStartTimer={handleStartTimer}
-              onPauseTimer={() => setTimerRunning(false)}
-              onStopAndSaveTimer={handleStopAndSaveTimer}
-              onResetTimer={handleResetTimer}
-              onOpenFocusZoom={() => setFocusZoomOpen(true)}
-              onNotify={notify}
-            />
-          )}
+              {activeSection === 'sessions' && (
+                <SessionsView
+                  profile={profile}
+                  courses={courses}
+                  topics={topics}
+                  sessions={sessions}
+                  timerRunning={timerRunning}
+                  timerSeconds={timerSeconds}
+                  timerPreset={timerPreset}
+                  timerCourseId={timerCourseId}
+                  timerTopicId={timerTopicId}
+                  onSetTimerPreset={setTimerPreset}
+                  onSetTimerTarget={(cId, tId) => {
+                    setTimerCourseId(cId);
+                    setTimerTopicId(tId);
+                  }}
+                  onStartTimer={handleStartTimer}
+                  onPauseTimer={() => setTimerRunning(false)}
+                  onStopAndSaveTimer={handleStopAndSaveTimer}
+                  onResetTimer={handleResetTimer}
+                  onOpenFocusZoom={() => setFocusZoomOpen(true)}
+                  onNotify={notify}
+                />
+              )}
 
-          {activeSection === 'notes' && (
-            <NotesFilesView
-              profile={profile}
-              courses={courses}
-              topics={topics}
-              notes={notes}
-              friendUids={friendUids}
-              friendProfiles={friendProfiles}
-              studyGroups={studyGroups}
-              accessToken={accessToken}
-              onRequestAuth={() => void handleConnectWorkspace()}
-              onNotify={notify}
-              initialComposeMode={notesComposeMode}
-            />
-          )}
+              {activeSection === 'notes' && (
+                <NotesFilesView
+                  profile={profile}
+                  courses={courses}
+                  topics={topics}
+                  notes={notes}
+                  friendUids={friendUids}
+                  friendProfiles={friendProfiles}
+                  studyGroups={studyGroups}
+                  accessToken={accessToken}
+                  onRequestAuth={() => void handleConnectWorkspace()}
+                  onNotify={notify}
+                  initialComposeMode={notesComposeMode}
+                />
+              )}
 
-          {activeSection === 'cgpa' && (
-            <CgpaView profile={profile} courses={courses} onNotify={notify} />
-          )}
+              {activeSection === 'cgpa' && (
+                <CgpaView profile={profile} courses={courses} onNotify={notify} />
+              )}
 
-          {activeSection === 'friends' && (
-            <FriendsView
-              profile={profile}
-              courses={courses}
-              topics={topics}
-              sessions={sessions}
-              friendProfiles={friendProfiles}
-              incomingRequests={incomingRequests}
-              outgoingRequests={outgoingRequests}
-              groupSessions={groupSessions}
-              sharedNotes={sharedNotes}
-              accessToken={accessToken}
-              pendingInviteCode={pendingInviteCode}
-              onClearPendingInvite={() => setPendingInviteCode(null)}
-              onRequestAuth={() => void handleConnectWorkspace()}
-              onStartFocusZoom={(courseCode) => {
-                const matched = courses.find(
-                  (c) => c.code.toLowerCase() === courseCode.toLowerCase()
-                );
-                if (matched) setTimerCourseId(matched.id);
-                handleStartTimer();
-              }}
-              onNotify={notify}
-            />
-          )}
+              {activeSection === 'friends' && (
+                <FriendsView
+                  profile={profile}
+                  courses={courses}
+                  topics={topics}
+                  sessions={sessions}
+                  friendProfiles={friendProfiles}
+                  incomingRequests={incomingRequests}
+                  outgoingRequests={outgoingRequests}
+                  groupSessions={groupSessions}
+                  sharedNotes={sharedNotes}
+                  accessToken={accessToken}
+                  pendingInviteCode={pendingInviteCode}
+                  onClearPendingInvite={() => setPendingInviteCode(null)}
+                  onRequestAuth={() => void handleConnectWorkspace()}
+                  onStartFocusZoom={(courseCode) => {
+                    const matched = courses.find(
+                      (c) => c.code.toLowerCase() === courseCode.toLowerCase()
+                    );
+                    if (matched) setTimerCourseId(matched.id);
+                    handleStartTimer();
+                  }}
+                  onNotify={notify}
+                />
+              )}
 
-          {activeSection === 'requests' && (
-            <FeatureRequestsView
-              profile={profile}
-              formConfig={featureFormConfig}
-              requests={featureRequests}
-              accessToken={accessToken}
-              onRequestAuth={() => void handleConnectWorkspace()}
-              onNotify={notify}
-            />
-          )}
+              {activeSection === 'requests' && (
+                <FeatureRequestsView
+                  profile={profile}
+                  formConfig={featureFormConfig}
+                  requests={featureRequests}
+                  accessToken={accessToken}
+                  onRequestAuth={() => void handleConnectWorkspace()}
+                  onNotify={notify}
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
         </main>
       </div>
 
@@ -1149,31 +1337,39 @@ function StudyTrackerWorkspace() {
       />
 
       {/* Toast Feedback */}
-      {toast && (
-        <div
-          role="status"
-          className="fixed bottom-5 right-5 z-50 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 px-4 py-2.5 rounded-lg text-sm font-medium shadow-lg flex items-center gap-3"
-        >
-          <span>{toast}</span>
-          <button
-            type="button"
-            onClick={() => setToast(null)}
-            className="opacity-70 hover:opacity-100"
-            aria-label="Dismiss message"
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 14, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 10, scale: 0.96 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            role="status"
+            className="fixed bottom-5 right-5 z-50 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 px-4 py-2.5 rounded-lg text-sm font-medium shadow-lg flex items-center gap-3"
           >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+            <span>{toast}</span>
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              className="opacity-70 hover:opacity-100"
+              aria-label="Dismiss message"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
 export default function App() {
   return (
-    <ErrorBoundary>
-      <StudyTrackerWorkspace />
-      <Analytics />
-    </ErrorBoundary>
+    <MotionConfig reducedMotion="user">
+      <ErrorBoundary>
+        <StudyTrackerWorkspace />
+        <Analytics />
+      </ErrorBoundary>
+    </MotionConfig>
   );
 }

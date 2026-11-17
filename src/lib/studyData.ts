@@ -21,6 +21,7 @@ import {
   FeatureRequestStatus,
   FriendRequest,
   Friendship,
+  GlobalAnnouncement,
   GradingScale,
   GroupStudySession,
   NoteOrFile,
@@ -113,7 +114,7 @@ export async function ensureUserInitialized(user: User): Promise<UserProfile> {
 
     if (snap.exists()) {
       const existing = snap.data() as UserProfile;
-      // Ensure lookup docs exist
+      // Ensure public profile and lookup docs exist (repairs older/partial accounts)
       const pubRef = doc(db, 'userPublicProfiles', user.uid);
       const pubSnap = await getDoc(pubRef);
       if (!pubSnap.exists()) {
@@ -127,6 +128,31 @@ export async function ensureUserInitialized(user: User): Promise<UserProfile> {
           courseProgress: [],
           updatedAt: serverTimestamp(),
         });
+      }
+      if (existing.friendCode) {
+        const fcRef = doc(db, 'friendCodes', existing.friendCode);
+        const fcSnap = await getDoc(fcRef);
+        if (!fcSnap.exists()) {
+          await setDoc(fcRef, {
+            uid: user.uid,
+            displayName: existing.displayName,
+            createdAt: serverTimestamp(),
+          });
+        }
+      }
+      const existingEmail = existing.email || user.email || '';
+      if (existingEmail) {
+        const eHash = await hashEmail(existingEmail);
+        const elRef = doc(db, 'emailLookup', eHash);
+        const elSnap = await getDoc(elRef);
+        if (!elSnap.exists()) {
+          await setDoc(elRef, {
+            uid: user.uid,
+            displayName: existing.displayName,
+            friendCode: existing.friendCode,
+            createdAt: serverTimestamp(),
+          });
+        }
       }
       return existing;
     }
@@ -560,10 +586,22 @@ export async function syncSharedNotesFriendList(
 export async function lookupStudentByCodeOrEmail(
   queryValue: string
 ): Promise<{ uid: string; displayName: string } | null> {
-  const trimmed = queryValue.trim();
+  let trimmed = queryValue.trim();
   if (!trimmed) return null;
 
-  if (trimmed.includes('@')) {
+  // Support pasting a full invite URL (e.g., https://.../?invite=ST-XXXX)
+  if (trimmed.includes('invite=') || /^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed.startsWith('http') ? trimmed : `https://example.com/?${trimmed}`);
+      const fromParam = url.searchParams.get('invite');
+      if (fromParam) trimmed = fromParam.trim();
+    } catch {
+      const match = trimmed.match(/invite=([a-zA-Z0-9\-]+)/i);
+      if (match?.[1]) trimmed = match[1];
+    }
+  }
+
+  if (trimmed.includes('@') && !trimmed.includes('/')) {
     const emailHash = await hashEmail(trimmed);
     const path = `emailLookup/${emailHash}`;
     try {
@@ -575,7 +613,8 @@ export async function lookupStudentByCodeOrEmail(
       handleFirestoreError(error, OperationType.GET, path);
     }
   } else {
-    const code = trimmed.toUpperCase();
+    const code = trimmed.toUpperCase().replace(/[^A-Z0-9\-]/g, '');
+    if (code.length < 4 || code.length > 24) return null;
     const path = `friendCodes/${code}`;
     try {
       const snap = await getDoc(doc(db, 'friendCodes', code));
@@ -592,6 +631,10 @@ export async function sendFriendRequest(
   fromProfile: UserProfile,
   target: { uid: string; displayName: string }
 ): Promise<string> {
+  const existingPair = await getDoc(doc(db, 'friendships', pairDocId(fromProfile.uid, target.uid)));
+  if (existingPair.exists()) {
+    throw new Error(`You are already connected with ${target.displayName}.`);
+  }
   const id = makeId('frq');
   const path = `friendRequests/${id}`;
   try {
@@ -616,16 +659,20 @@ export async function respondToFriendRequest(
 ): Promise<void> {
   const path = `friendRequests/${request.id}`;
   try {
+    const uidA = request.fromUid < request.toUid ? request.fromUid : request.toUid;
+    const uidB = request.fromUid < request.toUid ? request.toUid : request.fromUid;
+    const pId = `${uidA}_${uidB}`;
+    const existingFriendship = accept
+      ? await getDoc(doc(db, 'friendships', pId))
+      : null;
+
     const batch = writeBatch(db);
     batch.update(doc(db, 'friendRequests', request.id), {
       status: accept ? 'accepted' : 'declined',
       updatedAt: serverTimestamp(),
     });
 
-    if (accept) {
-      const uidA = request.fromUid < request.toUid ? request.fromUid : request.toUid;
-      const uidB = request.fromUid < request.toUid ? request.toUid : request.fromUid;
-      const pId = `${uidA}_${uidB}`;
+    if (accept && existingFriendship && !existingFriendship.exists()) {
       batch.set(doc(db, 'friendships', pId), {
         uidA,
         uidB,
@@ -641,22 +688,50 @@ export async function respondToFriendRequest(
   }
 }
 
+export async function cancelFriendRequest(requestId: string): Promise<void> {
+  const path = `friendRequests/${requestId}`;
+  try {
+    await deleteDoc(doc(db, 'friendRequests', requestId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function removeFriend(myUid: string, friendUid: string): Promise<void> {
+  const pId = pairDocId(myUid, friendUid);
+  const path = `friendships/${pId}`;
+  try {
+    await deleteDoc(doc(db, 'friendships', pId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
 export async function fetchFriendPublicProfiles(
   friendUids: string[]
 ): Promise<UserPublicProfile[]> {
   if (!friendUids.length) return [];
-  const results: UserPublicProfile[] = [];
-  for (const fUid of friendUids) {
-    const path = `userPublicProfiles/${fUid}`;
-    try {
-      const snap = await getDoc(doc(db, 'userPublicProfiles', fUid));
-      if (snap.exists()) {
-        results.push(snap.data() as UserPublicProfile);
+  const results = await Promise.all(
+    friendUids.map(async (fUid): Promise<UserPublicProfile> => {
+      try {
+        const snap = await getDoc(doc(db, 'userPublicProfiles', fUid));
+        if (snap.exists()) {
+          return snap.data() as UserPublicProfile;
+        }
+      } catch (error) {
+        console.warn(`Could not fetch public profile for ${fUid}:`, error);
       }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, path);
-    }
-  }
+      return {
+        uid: fUid,
+        displayName: 'Connected Classmate',
+        friendCode: '',
+        weeklyMinutes: 0,
+        streakDays: 0,
+        weeklyGoalMinutes: 600,
+        courseProgress: [],
+      };
+    })
+  );
   return results;
 }
 
@@ -1043,5 +1118,74 @@ export async function deleteGroupMessage(
     handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
+
+// ---------------- ADMIN CONTROL PANEL HELPERS ----------------
+
+export async function saveGlobalAnnouncement(
+  uid: string,
+  payload: Omit<GlobalAnnouncement, 'updatedByUid' | 'updatedAt'>
+): Promise<void> {
+  const path = 'appConfig/announcement';
+  try {
+    await setDoc(doc(db, 'appConfig', 'announcement'), {
+      enabled: Boolean(payload.enabled),
+      title: payload.title.trim().slice(0, 120) || 'Notice',
+      message: payload.message.trim().slice(0, 600),
+      tone: payload.tone,
+      updatedByUid: uid,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function clearGlobalAnnouncement(): Promise<void> {
+  const path = 'appConfig/announcement';
+  try {
+    await deleteDoc(doc(db, 'appConfig', 'announcement'));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function setUserSuspensionAdmin(
+  targetUid: string,
+  suspended: boolean,
+  reason = ''
+): Promise<void> {
+  const path = `users/${targetUid}`;
+  try {
+    await updateDoc(doc(db, 'users', targetUid), {
+      suspended,
+      suspendedReason: reason.trim().slice(0, 300),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function fetchAdminDashboardData(): Promise<{
+  users: UserProfile[];
+  publicProfiles: UserPublicProfile[];
+  groups: StudyGroup[];
+}> {
+  try {
+    const [usersSnap, pubSnap, groupsSnap] = await Promise.all([
+      getDocs(collection(db, 'users')),
+      getDocs(collection(db, 'userPublicProfiles')),
+      getDocs(collection(db, 'studyGroups')),
+    ]);
+    return {
+      users: usersSnap.docs.map((d) => d.data() as UserProfile),
+      publicProfiles: pubSnap.docs.map((d) => d.data() as UserPublicProfile),
+      groups: groupsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<StudyGroup, 'id'>) })),
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'admin_dashboard');
+  }
+}
+
 
 

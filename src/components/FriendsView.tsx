@@ -13,13 +13,16 @@ import {
   MessageCircle,
   Play,
   Search,
+  Trash2,
   Trophy,
+  UserMinus,
   UserPlus,
   Users,
   X,
 } from 'lucide-react';
 import { getIdToken } from '../lib/firebase.ts';
 import {
+  cancelFriendRequest,
   completeGroupStudySession,
   computeStreakDays,
   computeWeeklyMinutes,
@@ -27,6 +30,7 @@ import {
   createNoteOrFile,
   joinGroupStudySession,
   lookupStudentByCodeOrEmail,
+  removeFriend,
   respondToFriendRequest,
   sendFriendRequest,
 } from '../lib/studyData.ts';
@@ -162,6 +166,11 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   const [sharedBlobUrl, setSharedBlobUrl] = useState<string | null>(null);
   const [sharedDriveEmbedUrl, setSharedDriveEmbedUrl] = useState<string | null>(null);
   const [savingCopyId, setSavingCopyId] = useState<string | null>(null);
+  const [friendBusyId, setFriendBusyId] = useState<string | null>(null);
+  const [confirmRemoveFriend, setConfirmRemoveFriend] = useState<{
+    uid: string;
+    name: string;
+  } | null>(null);
 
   const myWeeklyMinutes = computeWeeklyMinutes(sessions);
   const myStreakDays = computeStreakDays(sessions);
@@ -217,7 +226,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       const target = await lookupStudentByCodeOrEmail(val);
       if (!target) {
         setFoundStudentPreview(null);
-        onNotify('No student found yet. Share your Invite Link or send a Gmail invite.');
+        onNotify('No student found yet. Ask them to sign in once, or share your Invite Link.');
         return;
       }
       if (target.uid === profile.uid) {
@@ -226,6 +235,9 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         return;
       }
       setFoundStudentPreview(target);
+    } catch (err) {
+      setFoundStudentPreview(null);
+      onNotify(err instanceof Error ? err.message : 'Student lookup failed.');
     } finally {
       setLookingUpFriend(false);
     }
@@ -238,11 +250,33 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     try {
       const target = foundStudentPreview || (await lookupStudentByCodeOrEmail(friendLookupInput));
       if (!target) {
-        onNotify('No student found with that friend code or email. Send your invite link via WhatsApp or Gmail!');
+        onNotify(
+          'No student found with that code, email, or link. Share your Invite Link via WhatsApp or Gmail first!'
+        );
         return;
       }
       if (target.uid === profile.uid) {
         onNotify('You cannot send a friend request to yourself.');
+        return;
+      }
+      if (friendProfiles.some((f) => f.uid === target.uid)) {
+        onNotify(`You are already connected with ${target.displayName}.`);
+        setFriendLookupInput('');
+        setFoundStudentPreview(null);
+        return;
+      }
+      const existingOutgoing = outgoingRequests.find((r) => r.toUid === target.uid);
+      if (existingOutgoing) {
+        onNotify(`A friend invite is already pending for ${target.displayName}.`);
+        return;
+      }
+      const existingIncoming = incomingRequests.find((r) => r.fromUid === target.uid);
+      if (existingIncoming) {
+        await respondToFriendRequest(existingIncoming, true);
+        setFriendLookupInput('');
+        setFoundStudentPreview(null);
+        if (pendingInviteCode && onClearPendingInvite) onClearPendingInvite();
+        onNotify(`${target.displayName} had already invited you — connected immediately!`);
         return;
       }
       await sendFriendRequest(profile, target);
@@ -256,6 +290,30 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       onNotify(err instanceof Error ? err.message : 'Failed to send friend invite.');
     } finally {
       setSendingInvite(false);
+    }
+  };
+
+  const handleRespondRequest = async (req: FriendRequest, accept: boolean) => {
+    setFriendBusyId(req.id);
+    try {
+      await respondToFriendRequest(req, accept);
+      onNotify(accept ? `Connected with ${req.fromName}.` : `Declined invite from ${req.fromName}.`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Could not update friend request.');
+    } finally {
+      setFriendBusyId(null);
+    }
+  };
+
+  const handleCancelSentRequest = async (req: FriendRequest) => {
+    setFriendBusyId(req.id);
+    try {
+      await cancelFriendRequest(req.id);
+      onNotify(`Cancelled friend invite to ${req.toName}.`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Could not cancel invite.');
+    } finally {
+      setFriendBusyId(null);
     }
   };
 
@@ -274,6 +332,8 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       );
       setGroupTopicTitle('');
       onNotify('Study room created and invite sent to your friend.');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Failed to create study room.');
     } finally {
       setCreatingRoom(false);
     }
@@ -498,7 +558,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   setFriendLookupInput(e.target.value);
                   setFoundStudentPreview(null);
                 }}
-                placeholder="Enter Friend Code (ST-...) or classmate email"
+                placeholder="Friend Code (ST-...), classmate Gmail, or invite URL"
                 className="flex-1 px-3 py-2 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
               />
               <button
@@ -513,7 +573,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
               <button
                 type="submit"
                 disabled={sendingInvite}
-                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap disabled:opacity-60"
               >
                 <UserPlus className="w-4 h-4" />
                 {sendingInvite ? 'Sending...' : 'Send Invite'}
@@ -540,26 +600,24 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   key={req.id}
                   className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg flex items-center justify-between gap-3"
                 >
-                  <div className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                  <div className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">
                     {req.fromName} wants to connect
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() =>
-                        void respondToFriendRequest(req, true).then(() =>
-                          onNotify(`Connected with ${req.fromName}.`)
-                        )
-                      }
-                      className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-md"
+                      disabled={friendBusyId === req.id}
+                      onClick={() => void handleRespondRequest(req, true)}
+                      className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-md disabled:opacity-60"
                     >
                       <Check className="w-3.5 h-3.5" />
-                      Accept
+                      {friendBusyId === req.id ? '...' : 'Accept'}
                     </button>
                     <button
                       type="button"
-                      onClick={() => void respondToFriendRequest(req, false)}
-                      className="px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-red-600"
+                      disabled={friendBusyId === req.id}
+                      onClick={() => void handleRespondRequest(req, false)}
+                      className="px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-red-600 disabled:opacity-60"
                     >
                       Decline
                     </button>
@@ -570,8 +628,29 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
           )}
 
           {outgoingRequests.length > 0 && (
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              Pending sent invites: {outgoingRequests.map((r) => r.toName).join(', ')}
+            <div className="pt-2 space-y-1.5">
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Pending Sent Invites ({outgoingRequests.length})
+              </div>
+              {outgoingRequests.map((req) => (
+                <div
+                  key={req.id}
+                  className="px-3 py-2 glass-subtle rounded-lg flex items-center justify-between gap-2 text-xs"
+                >
+                  <span className="text-slate-700 dark:text-slate-200 truncate">
+                    Waiting for <strong>{req.toName}</strong> to accept
+                  </span>
+                  <button
+                    type="button"
+                    disabled={friendBusyId === req.id}
+                    onClick={() => void handleCancelSentRequest(req)}
+                    className="inline-flex items-center gap-1 text-slate-500 hover:text-red-600 dark:hover:text-red-400 shrink-0 disabled:opacity-50"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Cancel
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -819,9 +898,15 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                         <button
                           type="button"
                           onClick={() =>
-                            void joinGroupStudySession(profile.uid, gs).then(() =>
-                              onNotify('Joined live study room! Open Zoom + Notes when ready.')
-                            )
+                            void joinGroupStudySession(profile.uid, gs)
+                              .then(() =>
+                                onNotify('Joined live study room! Open Zoom + Notes when ready.')
+                              )
+                              .catch((err) =>
+                                onNotify(
+                                  err instanceof Error ? err.message : 'Could not join study room.'
+                                )
+                              )
                           }
                           className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg"
                         >
@@ -847,9 +932,17 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                               gs.status === 'active' && elapsedSec >= 60
                                 ? Math.max(1, Math.round(elapsedSec / 60))
                                 : gs.durationMinutes;
-                            void completeGroupStudySession(profile.uid, gs, minsToLog).then(() =>
-                              onNotify(`Completed & logged ${minsToLog} min group study session.`)
-                            );
+                            void completeGroupStudySession(profile.uid, gs, minsToLog)
+                              .then(() =>
+                                onNotify(`Completed & logged ${minsToLog} min group study session.`)
+                              )
+                              .catch((err) =>
+                                onNotify(
+                                  err instanceof Error
+                                    ? err.message
+                                    : 'Could not complete study session.'
+                                )
+                              );
                           }}
                           className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
                         >
@@ -863,6 +956,63 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
             </div>
           )}
         </div>
+      </div>
+
+      {/* Connected Friends Directory */}
+      <div className="glass-panel rounded-xl p-6 space-y-4">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+              Connected Friends ({friendProfiles.length})
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Friends you can study with live, compare weekly progress against, and share PDF notes with.
+            </p>
+          </div>
+        </div>
+        {friendProfiles.length === 0 ? (
+          <div className="p-4 glass-subtle rounded-lg text-xs text-slate-500 dark:text-slate-400">
+            No friends connected yet. Copy your invite link above or enter a classmate&apos;s Friend Code / Gmail to connect.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {friendProfiles.map((fp) => (
+              <div
+                key={fp.uid}
+                className="p-4 glass-subtle rounded-xl flex items-center justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                    {fp.displayName}
+                  </div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums mt-0.5">
+                    {fp.friendCode ? `${fp.friendCode} · ` : ''}
+                    {(fp.weeklyMinutes / 60).toFixed(1)}h · {fp.streakDays}d streak
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setGroupFriendUid(fp.uid)}
+                    className="px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-md"
+                    title="Select for Study Together room"
+                  >
+                    Room
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRemoveFriend({ uid: fp.uid, name: fp.displayName })}
+                    className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded-md"
+                    aria-label={`Remove ${fp.displayName}`}
+                    title="Remove friend"
+                  >
+                    <UserMinus className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Syllabus Progress Comparison */}
@@ -1078,6 +1228,27 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         busy={sendingGmail}
         onConfirm={handleConfirmSendGmail}
         onCancel={() => setConfirmGmailOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmRemoveFriend)}
+        title="Remove connected friend?"
+        description={`Remove ${confirmRemoveFriend?.name || 'this friend'} from your connected friends list? You can re-connect later via invite link or friend code.`}
+        details={confirmRemoveFriend ? [`Friend: ${confirmRemoveFriend.name}`] : []}
+        confirmLabel="Remove Friend"
+        tone="danger"
+        onConfirm={async () => {
+          if (!confirmRemoveFriend) return;
+          try {
+            await removeFriend(profile.uid, confirmRemoveFriend.uid);
+            onNotify(`Removed ${confirmRemoveFriend.name} from your friends.`);
+          } catch (err) {
+            onNotify(err instanceof Error ? err.message : 'Could not remove friend.');
+          } finally {
+            setConfirmRemoveFriend(null);
+          }
+        }}
+        onCancel={() => setConfirmRemoveFriend(null)}
       />
     </div>
   );

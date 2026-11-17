@@ -1,23 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import {
-  CheckCircle2,
   ClipboardList,
   ExternalLink,
   FileSpreadsheet,
-  Link2,
   Mail,
-  Plus,
-  RefreshCw,
   Send,
-  ShieldCheck,
   Trash2,
 } from 'lucide-react';
 import {
-  clearFeatureFormConfig,
   deleteFeatureRequest,
-  saveFeatureFormConfig,
   submitFeatureRequest,
-  updateFeatureRequestAdmin,
 } from '../lib/studyData.ts';
 import {
   ADMIN_SUPPORT_EMAIL,
@@ -25,17 +17,9 @@ import {
   FeatureRequest,
   FeatureRequestCategory,
   FeatureRequestStatus,
-  isAppAdmin,
   UserProfile,
 } from '../lib/types.ts';
-import {
-  createFeatureRequestGoogleForm,
-  getGoogleFormDetails,
-  GoogleFormDetails,
-  GoogleFormResponseSummary,
-  listGoogleFormResponses,
-  sendStudyEmail,
-} from '../lib/workspace.ts';
+import { sendStudyEmail } from '../lib/workspace.ts';
 import { ConfirmDialog } from './ConfirmDialog.tsx';
 
 interface FeatureRequestsViewProps {
@@ -111,7 +95,6 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
   onRequestAuth,
   onNotify,
 }) => {
-  const userIsAdmin = isAppAdmin(profile.email);
   const safeResponderUri = formConfig?.responderUri
     ? sanitizeFormUri(formConfig.responderUri)
     : null;
@@ -123,19 +106,6 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
   const [submittingRequest, setSubmittingRequest] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'all' | FeatureRequestStatus>('all');
   const [showEmbeddedForm, setShowEmbeddedForm] = useState(false);
-
-  // Admin Google Forms state
-  const [newFormTitle, setNewFormTitle] = useState('Study Tracker — Feature Requests');
-  const [linkFormIdInput, setLinkFormIdInput] = useState('');
-  const [formDetails, setFormDetails] = useState<GoogleFormDetails | null>(null);
-  const [formResponses, setFormResponses] = useState<GoogleFormResponseSummary[]>([]);
-  const [loadingResponses, setLoadingResponses] = useState(false);
-
-  // Admin triage draft state per request ID
-  const [triageEdits, setTriageEdits] = useState<
-    Record<string, { status: FeatureRequestStatus; adminNote: string }>
-  >({});
-  const [savingTriageId, setSavingTriageId] = useState<string | null>(null);
 
   // Explicit confirmation modal state for external/destructive mutations
   const [confirmState, setConfirmState] = useState<{
@@ -189,119 +159,11 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
       });
       setTitle('');
       setDescription('');
-      onNotify('Feature request submitted to admin.');
+      onNotify('Feature request submitted.');
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Could not submit feature request.');
     } finally {
       setSubmittingRequest(false);
-    }
-  };
-
-  const handleCreateGoogleForm = () => {
-    if (!accessToken) {
-      onNotify('Connect Google Workspace access first to create a Google Form.');
-      onRequestAuth();
-      return;
-    }
-    const desiredTitle = newFormTitle.trim() || 'Study Tracker — Feature Requests';
-    openConfirm({
-      title: 'Create Feature Request Google Form',
-      description:
-        'This will create a new Google Form in your Google account with 4 feature-request questions and publish its link to Study Tracker students.',
-      details: [
-        `Form title: ${desiredTitle}`,
-        'Questions: Category, Feature Title, Description, Optional Email',
-        'Admin: ' + ADMIN_SUPPORT_EMAIL,
-      ],
-      confirmLabel: 'Create Google Form',
-      tone: 'primary',
-      action: async () => {
-        const created = await createFeatureRequestGoogleForm(accessToken, desiredTitle);
-        setFormDetails(created);
-        await saveFeatureFormConfig(profile.uid, {
-          formId: created.formId,
-          formTitle: created.title,
-          responderUri: created.responderUri,
-        });
-        onNotify(`Created and linked Google Form "${created.title}".`);
-      },
-    });
-  };
-
-  const handleLinkExistingForm = (e: React.FormEvent) => {
-    e.preventDefault();
-    const rawId = linkFormIdInput.trim();
-    if (!rawId) {
-      onNotify('Enter a Google Form ID first.');
-      return;
-    }
-    if (!accessToken) {
-      onNotify('Connect Google Workspace access first to verify the Google Form.');
-      onRequestAuth();
-      return;
-    }
-    openConfirm({
-      title: 'Link Existing Google Form',
-      description:
-        'Study Tracker will fetch the form metadata via Google Forms API and share its responder link with students.',
-      details: [`Form ID: ${rawId}`],
-      confirmLabel: 'Verify & Link Form',
-      tone: 'primary',
-      action: async () => {
-        const details = await getGoogleFormDetails(accessToken, rawId);
-        setFormDetails(details);
-        await saveFeatureFormConfig(profile.uid, {
-          formId: details.formId,
-          formTitle: details.title,
-          responderUri: details.responderUri,
-        });
-        setLinkFormIdInput('');
-        onNotify(`Linked Google Form "${details.title}".`);
-      },
-    });
-  };
-
-  const handleUnlinkForm = () => {
-    openConfirm({
-      title: 'Unlink Google Form',
-      description:
-        'Removes the active Google Form link from the Feature Requests page. Your form remains intact in Google Drive.',
-      details: [formConfig?.formTitle || 'Current linked form'],
-      confirmLabel: 'Unlink Form',
-      tone: 'danger',
-      action: async () => {
-        await clearFeatureFormConfig();
-        setFormDetails(null);
-        setFormResponses([]);
-        onNotify('Unlinked Google Form from Study Tracker.');
-      },
-    });
-  };
-
-  const handleFetchResponses = async () => {
-    if (!formConfig?.formId) return;
-    if (!accessToken) {
-      onNotify('Reconnect Google Sign-In to read Google Form responses.');
-      onRequestAuth();
-      return;
-    }
-    setLoadingResponses(true);
-    try {
-      const [details, responses] = await Promise.all([
-        getGoogleFormDetails(accessToken, formConfig.formId),
-        listGoogleFormResponses(accessToken, formConfig.formId),
-      ]);
-      setFormDetails(details);
-      setFormResponses(responses);
-      onNotify(`Loaded ${responses.length} response(s) from Google Forms.`);
-    } catch (err) {
-      onNotify(
-        err instanceof Error
-          ? err.message
-          : 'Could not read Google Form responses. Ensure you own the form.'
-      );
-    } finally {
-      setLoadingResponses(false);
     }
   };
 
@@ -339,21 +201,7 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
     });
   };
 
-  const handleSaveTriage = async (req: FeatureRequest) => {
-    const draft = triageEdits[req.id] || {
-      status: req.status,
-      adminNote: req.adminNote,
-    };
-    setSavingTriageId(req.id);
-    try {
-      await updateFeatureRequestAdmin(req.id, draft.status, draft.adminNote);
-      onNotify(`Updated "${req.title}" to ${STATUS_LABELS[draft.status]}.`);
-    } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'Could not update request status.');
-    } finally {
-      setSavingTriageId(null);
-    }
-  };
+
 
   const handleDeleteRequest = (req: FeatureRequest) => {
     openConfirm({
@@ -419,7 +267,7 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="glass-panel rounded-xl p-4">
           <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            {userIsAdmin ? 'All Student Requests' : 'Your Requests'}
+            Your Requests
           </div>
           <div className="text-2xl font-bold font-mono tabular-nums mt-1 text-slate-900 dark:text-slate-50">
             {counts.all}
@@ -592,9 +440,7 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
               </div>
             ) : (
               <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-                {userIsAdmin
-                  ? 'No Google Form is linked yet. Use the Admin Google Forms Console below to generate one in one click or link an existing Form ID.'
-                  : `The admin (${ADMIN_SUPPORT_EMAIL}) has not linked an external Google Form yet. Use the Request a Feature form on the left—it reaches the admin directly.`}
+                No external Google Form is linked right now. Use the Request a Feature form on the left—it delivers feedback directly.
               </div>
             )}
           </div>
@@ -631,168 +477,11 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
         </section>
       )}
 
-      {/* Admin Console: Google Forms Creation, Linking & Live Responses */}
-      {userIsAdmin && (
-        <section className="glass-panel border-blue-200/80 dark:border-blue-800/70 rounded-xl p-6 space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800">
-            <div className="flex items-center gap-2.5">
-              <ShieldCheck className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
-              <div>
-                <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                  Admin Console — Google Forms Manager
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Signed in as {profile.email}. Create or link a Google Form and read live responses.
-                </p>
-              </div>
-            </div>
-
-            {formConfig?.formId && (
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => void handleFetchResponses()}
-                  disabled={loadingResponses}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors whitespace-nowrap disabled:opacity-60"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loadingResponses ? 'animate-spin' : ''}`} />
-                  {loadingResponses ? 'Loading...' : 'Fetch Google Form Responses'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleUnlinkForm}
-                  className="px-3 py-2 text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-950/70 rounded-lg transition-colors whitespace-nowrap"
-                >
-                  Unlink
-                </button>
-              </div>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Create new Google Form */}
-            <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
-              <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                Create New Google Form via API
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Creates a structured feature-request Google Form in your Google account and shares its link with students.
-              </p>
-              <input
-                type="text"
-                maxLength={140}
-                value={newFormTitle}
-                onChange={(e) => setNewFormTitle(e.target.value)}
-                placeholder="Study Tracker — Feature Requests"
-                className="w-full px-3 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
-              />
-              <button
-                type="button"
-                onClick={handleCreateGoogleForm}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors whitespace-nowrap"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                Create & Link Google Form
-              </button>
-            </div>
-
-            {/* Link existing Google Form by ID */}
-            <form
-              onSubmit={handleLinkExistingForm}
-              className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3"
-            >
-              <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                Link Existing Google Form by ID
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Paste the Form ID from your Google Form edit URL (`docs.google.com/forms/d/&lt;FORM_ID&gt;/edit`).
-              </p>
-              <input
-                type="text"
-                maxLength={128}
-                value={linkFormIdInput}
-                onChange={(e) => setLinkFormIdInput(e.target.value)}
-                placeholder="e.g., 1FAIpQLSd..."
-                className="w-full px-3 py-2 text-sm font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
-              />
-              <button
-                type="submit"
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 rounded-lg transition-colors whitespace-nowrap"
-              >
-                <Link2 className="w-3.5 h-3.5" />
-                Verify & Link Form ID
-              </button>
-            </form>
-          </div>
-
-          {/* Live Google Form Structure & Responses */}
-          {formDetails && (
-            <div className="space-y-3 pt-2">
-              <div className="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Linked Form Questions ({formDetails.questions.length})
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {formDetails.questions.map((q) => (
-                  <div
-                    key={q.questionId}
-                    className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg"
-                  >
-                    <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
-                      {q.title}
-                    </div>
-                    <div className="text-[11px] font-mono text-slate-500 mt-0.5 uppercase">
-                      {q.kind}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {formResponses.length > 0 && (
-            <div className="space-y-3 pt-2">
-              <div className="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Google Forms Submissions ({formResponses.length})
-              </div>
-              <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-                {formResponses.map((resp) => (
-                  <div
-                    key={resp.responseId}
-                    className="p-4 bg-white dark:bg-slate-950 space-y-2"
-                  >
-                    <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                      <span className="font-mono">
-                        {resp.respondentEmail || 'Anonymous respondent'}
-                      </span>
-                      <span className="tabular-nums">
-                        {formatDateLabel(resp.createTime)}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      {resp.answers.map((ans, idx) => (
-                        <div key={idx} className="text-xs">
-                          <span className="font-semibold text-slate-700 dark:text-slate-300">
-                            {ans.questionTitle}:{' '}
-                          </span>
-                          <span className="text-slate-600 dark:text-slate-400">
-                            {ans.value || '—'}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* Feature Request Queue (Student's own requests, or All Requests for Admin) */}
+      {/* Submitted Feature Request Queue */}
       <section className="glass-panel rounded-xl p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-            {userIsAdmin ? 'All Student Feature Requests (Admin Triage)' : 'Your Submitted Feature Requests'}
+            Your Submitted Feature Requests
           </h2>
 
           <div className="inline-flex bg-slate-100 dark:bg-slate-950 p-1 rounded-lg border border-slate-200 dark:border-slate-800 self-start">
@@ -822,12 +511,7 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
             {visibleRequests.map((req) => {
               const catLabel =
                 CATEGORIES.find((c) => c.value === req.category)?.label || req.category;
-              const draft = triageEdits[req.id] || {
-                status: req.status,
-                adminNote: req.adminNote || '',
-              };
-              const canDelete =
-                userIsAdmin || (req.authorUid === profile.uid && req.status === 'open');
+              const canDelete = req.authorUid === profile.uid && req.status === 'open';
 
               return (
                 <div
@@ -850,14 +534,6 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
                         <span className="text-slate-500 dark:text-slate-400 tabular-nums">
                           {formatDateLabel(req.createdAt)}
                         </span>
-                        {userIsAdmin && (
-                          <>
-                            <span className="text-slate-400">·</span>
-                            <span className="text-slate-600 dark:text-slate-300 font-mono">
-                              {req.authorName} ({req.authorEmail || req.authorUid})
-                            </span>
-                          </>
-                        )}
                       </div>
                       <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                         {req.title}
@@ -880,59 +556,12 @@ export const FeatureRequestsView: React.FC<FeatureRequestsViewProps> = ({
                     {req.description}
                   </p>
 
-                  {req.adminNote && !userIsAdmin && (
+                  {req.adminNote && (
                     <div className="p-3 bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900/60 rounded-lg text-xs text-slate-700 dark:text-slate-300">
                       <span className="font-semibold text-blue-700 dark:text-blue-400">
-                        Admin Note:{' '}
+                        Note:{' '}
                       </span>
                       {req.adminNote}
-                    </div>
-                  )}
-
-                  {userIsAdmin && (
-                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
-                      <select
-                        value={draft.status}
-                        onChange={(e) =>
-                          setTriageEdits((prev) => ({
-                            ...prev,
-                            [req.id]: {
-                              ...draft,
-                              status: e.target.value as FeatureRequestStatus,
-                            },
-                          }))
-                        }
-                        className="sm:col-span-3 px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
-                      >
-                        <option value="open">Open</option>
-                        <option value="planned">Planned</option>
-                        <option value="shipped">Shipped</option>
-                        <option value="declined">Declined</option>
-                      </select>
-
-                      <input
-                        type="text"
-                        maxLength={500}
-                        value={draft.adminNote}
-                        onChange={(e) =>
-                          setTriageEdits((prev) => ({
-                            ...prev,
-                            [req.id]: { ...draft, adminNote: e.target.value },
-                          }))
-                        }
-                        placeholder="Add response note visible to student..."
-                        className="sm:col-span-7 px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-slate-100"
-                      />
-
-                      <button
-                        type="button"
-                        onClick={() => void handleSaveTriage(req)}
-                        disabled={savingTriageId === req.id}
-                        className="sm:col-span-2 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-slate-900 dark:bg-blue-600 hover:bg-slate-800 dark:hover:bg-blue-700 rounded-lg transition-colors whitespace-nowrap disabled:opacity-60"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        {savingTriageId === req.id ? 'Saving...' : 'Save'}
-                      </button>
                     </div>
                   )}
                 </div>
