@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Analytics } from '@vercel/analytics/react';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import {
   AlertTriangle,
@@ -1368,7 +1367,6 @@ export default function App() {
     <MotionConfig reducedMotion="user">
       <ErrorBoundary>
         <StudyTrackerWorkspace />
-        <Analytics />
       </ErrorBoundary>
     </MotionConfig>
   );

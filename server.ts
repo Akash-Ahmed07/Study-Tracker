@@ -1,11 +1,11 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import multer from 'multer';
 import dotenv from 'dotenv';
 import { initializeApp, getApps } from 'firebase-admin/app';
-import { getAuth, DecodedIdToken } from 'firebase-admin/auth';
+import { getAuth, type DecodedIdToken } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
 
