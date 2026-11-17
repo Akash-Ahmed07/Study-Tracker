@@ -38,6 +38,7 @@ import {
   Course,
   FriendRequest,
   GroupStudySession,
+  safeToMillis,
   SharedNote,
   StudySession,
   SyllabusTopic,
@@ -72,12 +73,8 @@ interface FriendsViewProps {
 }
 
 function getTimestampMillis(val: unknown): number | null {
-  if (!val) return null;
-  if (typeof val === 'object' && val !== null && 'toMillis' in val) {
-    const fn = (val as { toMillis?: () => number }).toMillis;
-    if (typeof fn === 'function') return fn();
-  }
-  return null;
+  const ms = safeToMillis(val);
+  return ms > 0 ? ms : null;
 }
 
 function formatElapsedClock(totalSeconds: number): string {

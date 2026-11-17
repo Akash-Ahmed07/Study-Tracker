@@ -76,6 +76,7 @@ import {
   isAppAdmin,
   NavSection,
   NoteOrFile,
+  safeToMillis,
   SharedNote,
   StudyGroup,
   StudySession,
@@ -494,17 +495,10 @@ function StudyTrackerWorkspace() {
           id: d.id,
           ...(d.data() as Omit<StudyGroup, 'id'>),
         }));
-        const toMillis = (val: unknown) => {
-          if (val && typeof val === 'object' && 'toMillis' in val) {
-            const fn = (val as { toMillis?: () => number }).toMillis;
-            if (typeof fn === 'function') return fn();
-          }
-          return 0;
-        };
         groups.sort(
           (a, b) =>
-            toMillis(b.lastMessageAt || b.createdAt) -
-            toMillis(a.lastMessageAt || a.createdAt)
+            safeToMillis(b.lastMessageAt || b.createdAt) -
+            safeToMillis(a.lastMessageAt || a.createdAt)
         );
         setStudyGroups(groups);
       },
@@ -549,14 +543,7 @@ function StudyTrackerWorkspace() {
           id: d.id,
           ...(d.data() as Omit<FeatureRequest, 'id'>),
         }));
-        const toMillis = (val: unknown) => {
-          if (val && typeof val === 'object' && 'toMillis' in val) {
-            const fn = (val as { toMillis?: () => number }).toMillis;
-            if (typeof fn === 'function') return fn();
-          }
-          return 0;
-        };
-        list.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+        list.sort((a, b) => safeToMillis(b.createdAt) - safeToMillis(a.createdAt));
         setFeatureRequests(list);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'featureRequests')

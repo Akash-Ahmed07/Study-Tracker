@@ -266,4 +266,54 @@ export interface StudyGroupMessage {
   createdAt?: unknown;
 }
 
+export function safeToMillis(val: unknown): number {
+  if (!val) return 0;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+  if (typeof val === 'string') {
+    const ms = Date.parse(val);
+    return Number.isNaN(ms) ? 0 : ms;
+  }
+  if (val instanceof Date) {
+    const ms = val.getTime();
+    return Number.isNaN(ms) ? 0 : ms;
+  }
+  if (typeof val === 'object') {
+    const obj = val as {
+      toMillis?: () => number;
+      seconds?: number;
+      nanoseconds?: number;
+    };
+    if (typeof obj.toMillis === 'function') {
+      try {
+        return obj.toMillis();
+      } catch {
+        return 0;
+      }
+    }
+    if (typeof obj.seconds === 'number') {
+      return obj.seconds * 1000 + Math.floor((obj.nanoseconds || 0) / 1e6);
+    }
+  }
+  return 0;
+}
 
+export function safeToDate(val: unknown): Date | null {
+  if (!val) return null;
+  if (val instanceof Date) return Number.isNaN(val.getTime()) ? null : val;
+  if (typeof val === 'object') {
+    const obj = val as { toDate?: () => Date };
+    if (typeof obj.toDate === 'function') {
+      try {
+        return obj.toDate();
+      } catch {
+        return null;
+      }
+    }
+  }
+  const ms = safeToMillis(val);
+  if (ms > 0) {
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}

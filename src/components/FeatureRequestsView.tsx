@@ -17,6 +17,7 @@ import {
   FeatureRequest,
   FeatureRequestCategory,
   FeatureRequestStatus,
+  safeToDate,
   UserProfile,
 } from '../lib/types.ts';
 import { sendStudyEmail } from '../lib/workspace.ts';
@@ -78,11 +79,9 @@ function formatDateLabel(ts: unknown): string {
     const d = new Date(ts);
     return Number.isNaN(d.getTime()) ? ts : d.toLocaleDateString();
   }
-  if (typeof ts === 'object' && ts !== null && 'toDate' in ts) {
-    const fn = (ts as { toDate?: () => Date }).toDate;
-    if (typeof fn === 'function') {
-      return fn().toLocaleDateString();
-    }
+  const d = safeToDate(ts);
+  if (d) {
+    return d.toLocaleDateString();
   }
   return 'Recent';
 }

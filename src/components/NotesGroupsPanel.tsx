@@ -31,6 +31,7 @@ import {
 import {
   Course,
   NoteOrFile,
+  safeToDate,
   StudyGroup,
   StudyGroupMessage,
   UserProfile,
@@ -68,11 +69,9 @@ function formatBytes(bytes: number): string {
 
 function formatMsgTime(ts: unknown): string {
   if (!ts) return 'now';
-  if (typeof ts === 'object' && ts !== null && 'toDate' in ts) {
-    const fn = (ts as { toDate?: () => Date }).toDate;
-    if (typeof fn === 'function') {
-      return fn().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
+  const d = safeToDate(ts);
+  if (d) {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
   return '';
 }

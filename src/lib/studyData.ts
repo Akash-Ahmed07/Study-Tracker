@@ -26,6 +26,7 @@ import {
   GradingScale,
   GroupStudySession,
   NoteOrFile,
+  safeToMillis,
   SharedNote,
   StudyGroup,
   StudyGroupMessage,
@@ -1282,16 +1283,9 @@ export async function fetchStudyGroupMessagesAdmin(
   const path = `studyGroups/${groupId}/messages`;
   try {
     const snap = await getDocs(collection(db, 'studyGroups', groupId, 'messages'));
-    const toMillis = (val: unknown) => {
-      if (val && typeof val === 'object' && 'toMillis' in val) {
-        const fn = (val as { toMillis?: () => number }).toMillis;
-        if (typeof fn === 'function') return fn();
-      }
-      return 0;
-    };
     return snap.docs
       .map((d) => ({ id: d.id, ...(d.data() as Omit<StudyGroupMessage, 'id'>) }))
-      .sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+      .sort((a, b) => safeToMillis(b.createdAt) - safeToMillis(a.createdAt));
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }
