@@ -31,7 +31,7 @@ const adminApp = getApps().length
 const adminAuth = getAuth(adminApp);
 const databaseId =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
-  'ai-studio-4c04f183-2f3a-41f1-91b9-700637bab5ec';
+  'ai-studio-studytracker-e35d7615-f3a0-43c8-aca6-ee7b8e3d95bf';
 const adminDb = getFirestore(adminApp, databaseId);
 
 interface AuthRequest extends Request {

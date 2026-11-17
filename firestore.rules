@@ -44,6 +44,7 @@ service cloud.firestore {
 
     function isAdmin() {
       return isVerified() && (
+        request.auth.token.email == 'akashahmed00011976@gmail.com' ||
         request.auth.token.email == 'groweasy25@gmail.com' ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
@@ -143,7 +144,6 @@ service cloud.firestore {
       return data.keys().hasAll(['uid', 'displayName', 'friendCode', 'weeklyMinutes', 'streakDays', 'weeklyGoalMinutes', 'courseProgress', 'updatedAt'])
         && data.keys().hasOnly(['uid', 'displayName', 'friendCode', 'weeklyMinutes', 'streakDays', 'weeklyGoalMinutes', 'courseProgress', 'updatedAt'])
         && data.uid == userId
-        && data.uid == request.auth.uid
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
         && data.friendCode is string && data.friendCode.size() >= 4 && data.friendCode.size() <= 24 && data.friendCode.matches('^[A-Z0-9\\-]+$')
         && data.weeklyMinutes is number && data.weeklyMinutes >= 0 && data.weeklyMinutes <= 10080
@@ -268,6 +268,18 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidSystemSettingsConfig(data) {
+      return data.keys().hasAll(['maintenanceMode', 'maintenanceMessage', 'allowSharedNotes', 'maxGroupMembers', 'defaultWeeklyGoalMinutes', 'updatedByUid', 'updatedAt'])
+        && data.keys().hasOnly(['maintenanceMode', 'maintenanceMessage', 'allowSharedNotes', 'maxGroupMembers', 'defaultWeeklyGoalMinutes', 'updatedByUid', 'updatedAt'])
+        && data.maintenanceMode is bool
+        && data.maintenanceMessage is string && data.maintenanceMessage.size() <= 500
+        && data.allowSharedNotes is bool
+        && data.maxGroupMembers is number && data.maxGroupMembers >= 2 && data.maxGroupMembers <= 25
+        && data.defaultWeeklyGoalMinutes is number && data.defaultWeeklyGoalMinutes >= 30 && data.defaultWeeklyGoalMinutes <= 10080
+        && isValidId(data.updatedByUid)
+        && data.updatedAt is timestamp;
+    }
+
     function isValidFeatureRequest(data) {
       return data.keys().hasAll(['authorUid', 'authorName', 'authorEmail', 'category', 'title', 'description', 'status', 'adminNote', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['authorUid', 'authorName', 'authorEmail', 'category', 'title', 'description', 'status', 'adminNote', 'createdAt', 'updatedAt'])
@@ -353,9 +365,9 @@ service cloud.firestore {
           (isOwner(userId)
             && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'gradingScale', 'weeklyGoalMinutes', 'priorCgpa', 'priorCredits', 'updatedAt']))
           || (isAdmin()
-            && incoming().diff(existing()).affectedKeys().hasOnly(['suspended', 'suspendedReason', 'updatedAt']))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'gradingScale', 'weeklyGoalMinutes', 'priorCgpa', 'priorCredits', 'suspended', 'suspendedReason', 'updatedAt']))
         );
-      allow delete: if false;
+      allow delete: if isAdmin() && isValidId(userId);
 
       match /courses/{courseId} {
         allow get: if isValidId(userId) && isValidId(courseId) && isOwner(userId);
@@ -425,14 +437,18 @@ service cloud.firestore {
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
       allow create: if isVerified() && isValidId(userId) && isOwner(userId)
         && isValidPublicProfile(incoming(), userId)
+        && incoming().uid == request.auth.uid
         && incoming().updatedAt == request.time;
-      allow update: if isVerified() && isValidId(userId) && isOwner(userId)
+      allow update: if isVerified() && isValidId(userId) && (isOwner(userId) || isAdmin())
         && isValidPublicProfile(incoming(), userId)
         && incoming().uid == existing().uid
         && incoming().friendCode == existing().friendCode
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'weeklyMinutes', 'streakDays', 'weeklyGoalMinutes', 'courseProgress', 'updatedAt']);
-      allow delete: if false;
+        && (
+          (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'weeklyMinutes', 'streakDays', 'weeklyGoalMinutes', 'courseProgress', 'updatedAt']))
+          || (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'weeklyGoalMinutes', 'updatedAt']))
+        );
+      allow delete: if isAdmin() && isValidId(userId);
     }
 
     // Direct lookup tables (get only, no list)
@@ -443,7 +459,7 @@ service cloud.firestore {
         && isValidFriendCodeLookup(incoming(), code)
         && incoming().createdAt == request.time;
       allow update: if false;
-      allow delete: if isVerified() && isValidId(code) && existing().uid == request.auth.uid;
+      allow delete: if isVerified() && isValidId(code) && (existing().uid == request.auth.uid || isAdmin());
     }
 
     match /emailLookup/{emailHash} {
@@ -453,7 +469,7 @@ service cloud.firestore {
         && isValidEmailLookup(incoming())
         && incoming().createdAt == request.time;
       allow update: if false;
-      allow delete: if isVerified() && isValidId(emailHash) && existing().uid == request.auth.uid;
+      allow delete: if isVerified() && isValidId(emailHash) && (existing().uid == request.auth.uid || isAdmin());
     }
 
     // Friend requests
@@ -499,7 +515,7 @@ service cloud.firestore {
             && getAfter(/databases/$(database)/documents/friendRequests/$(incoming().requestId)).data.toUid == incoming().uidA)
         );
       allow update: if false;
-      allow delete: if isVerified() && isValidId(pairId) && (existing().uidA == request.auth.uid || existing().uidB == request.auth.uid);
+      allow delete: if isVerified() && isValidId(pairId) && (existing().uidA == request.auth.uid || existing().uidB == request.auth.uid || isAdmin());
     }
 
     // Group study sessions
@@ -541,10 +557,10 @@ service cloud.firestore {
 
     // Shared notes & file pointers
     match /sharedNotes/{sharedNoteId} {
-      allow get: if isValidId(sharedNoteId) && isSignedIn()
-        && (existing().ownerUid == request.auth.uid || (request.auth.uid in existing().allowedFriendUids && isFriend(existing().ownerUid)));
-      allow list: if isSignedIn()
-        && (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.allowedFriendUids);
+      allow get: if isValidId(sharedNoteId) && (isAdmin() || (isSignedIn()
+        && (existing().ownerUid == request.auth.uid || (request.auth.uid in existing().allowedFriendUids && isFriend(existing().ownerUid)))));
+      allow list: if isAdmin() || (isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.allowedFriendUids));
       allow create: if isVerified() && isValidId(sharedNoteId)
         && isValidSharedNote(incoming())
         && incoming().ownerUid == request.auth.uid
@@ -559,7 +575,7 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly(['courseCode', 'title', 'textContent', 'driveFileId', 'allowedFriendUids', 'updatedAt']);
-      allow delete: if isVerified() && isValidId(sharedNoteId) && existing().ownerUid == request.auth.uid;
+      allow delete: if isVerified() && isValidId(sharedNoteId) && (existing().ownerUid == request.auth.uid || isAdmin());
     }
 
     // Explicit admin roles
@@ -573,7 +589,7 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(adminUid);
     }
 
-    // Admin-managed app configuration (Google Form + Global Announcement)
+    // Admin-managed app configuration (Google Form + Global Announcement + System Settings)
     match /appConfig/{configId} {
       allow get: if isValidId(configId) && isSignedIn();
       allow list: if false;
@@ -581,13 +597,15 @@ service cloud.firestore {
         && (
           (configId == 'featureForm' && isValidFeatureFormConfig(incoming()))
           || (configId == 'announcement' && isValidAnnouncementConfig(incoming()))
+          || (configId == 'systemSettings' && isValidSystemSettingsConfig(incoming()))
         );
       allow update: if isAdmin() && incoming().updatedByUid == request.auth.uid && incoming().updatedAt == request.time
         && (
           (configId == 'featureForm' && isValidFeatureFormConfig(incoming()))
           || (configId == 'announcement' && isValidAnnouncementConfig(incoming()))
+          || (configId == 'systemSettings' && isValidSystemSettingsConfig(incoming()))
         );
-      allow delete: if isAdmin() && (configId == 'featureForm' || configId == 'announcement');
+      allow delete: if isAdmin() && (configId == 'featureForm' || configId == 'announcement' || configId == 'systemSettings');
     }
 
     // Student feature requests submitted to admin
@@ -651,7 +669,9 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          (request.auth.uid in existing().memberUids
+          (isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'courseCode', 'memberUids', 'lastMessageText', 'lastMessageAt', 'updatedAt']))
+          || (request.auth.uid in existing().memberUids
             && incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'updatedAt']))
           || (existing().ownerUid == request.auth.uid
             && incoming().ownerUid in incoming().memberUids

@@ -56,6 +56,7 @@ interface NotesFilesViewProps {
   studyGroups: StudyGroup[];
   accessToken: string | null;
   onRequestAuth: () => void;
+  onRequestDriveOnly?: () => void;
   onNotify: (msg: string) => void;
   initialComposeMode?: 'upload' | 'text' | null;
 }
@@ -78,6 +79,7 @@ export const NotesFilesView: React.FC<NotesFilesViewProps> = ({
   studyGroups,
   accessToken,
   onRequestAuth,
+  onRequestDriveOnly,
   onNotify,
   initialComposeMode = null,
 }) => {
@@ -754,13 +756,24 @@ export const NotesFilesView: React.FC<NotesFilesViewProps> = ({
                       )}
                     </div>
                     {!accessToken && (
-                      <button
-                        type="button"
-                        onClick={onRequestAuth}
-                        className="px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap shrink-0"
-                      >
-                        Connect Google Drive
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={onRequestAuth}
+                          className="px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap shrink-0"
+                        >
+                          Connect Google Drive
+                        </button>
+                        {onRequestDriveOnly && (
+                          <button
+                            type="button"
+                            onClick={onRequestDriveOnly}
+                            className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg whitespace-nowrap shrink-0"
+                          >
+                            Drive Only
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
 

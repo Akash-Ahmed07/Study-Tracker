@@ -246,6 +246,21 @@
       },
       "required": ["enabled", "title", "message", "tone", "updatedByUid", "updatedAt"]
     },
+    "SystemSettingsConfig": {
+      "title": "SystemSettingsConfig",
+      "description": "Admin-managed platform controls including maintenance mode, sharing limits, and default goals.",
+      "type": "object",
+      "properties": {
+        "maintenanceMode": { "type": "boolean" },
+        "maintenanceMessage": { "type": "string", "maxLength": 500 },
+        "allowSharedNotes": { "type": "boolean" },
+        "maxGroupMembers": { "type": "number" },
+        "defaultWeeklyGoalMinutes": { "type": "number" },
+        "updatedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["maintenanceMode", "maintenanceMessage", "allowSharedNotes", "maxGroupMembers", "defaultWeeklyGoalMinutes", "updatedByUid", "updatedAt"]
+    },
     "FeatureRequest": {
       "title": "FeatureRequest",
       "description": "Student feature request submitted to the admin with status tracking.",

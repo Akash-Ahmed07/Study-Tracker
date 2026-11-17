@@ -3,10 +3,17 @@ export type TopicStatus = 'todo' | 'doing' | 'done';
 export type SessionSource = 'timer' | 'manual' | 'group';
 export type NoteKind = 'text' | 'file';
 
-export const ADMIN_SUPPORT_EMAIL = 'groweasy25@gmail.com';
+export const ADMIN_SUPPORT_EMAIL = 'akashahmed00011976@gmail.com';
+export const ADMIN_EMAILS = [
+  'akashahmed00011976@gmail.com',
+  'groweasy25@gmail.com',
+] as const;
 
-export function isAppAdmin(email?: string | null): boolean {
-  return Boolean(email && email.trim().toLowerCase() === ADMIN_SUPPORT_EMAIL);
+export function isAppAdmin(email?: string | null, isDynamicAdmin = false): boolean {
+  if (isDynamicAdmin) return true;
+  if (!email) return false;
+  const normalized = email.trim().toLowerCase();
+  return (ADMIN_EMAILS as readonly string[]).includes(normalized);
 }
 
 export type NavSection =
@@ -192,6 +199,22 @@ export interface GlobalAnnouncement {
   title: string;
   message: string;
   tone: 'info' | 'warning' | 'success';
+  updatedByUid: string;
+  updatedAt?: unknown;
+}
+
+export interface AdminRole {
+  uid: string;
+  email: string;
+  createdAt?: unknown;
+}
+
+export interface SystemSettingsConfig {
+  maintenanceMode: boolean;
+  maintenanceMessage: string;
+  allowSharedNotes: boolean;
+  maxGroupMembers: number;
+  defaultWeeklyGoalMinutes: number;
   updatedByUid: string;
   updatedAt?: unknown;
 }

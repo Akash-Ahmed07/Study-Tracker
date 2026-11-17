@@ -18,6 +18,8 @@ interface CommandPaletteProps {
   onStartQuickTimer: () => void;
   onOpenQuickNote: () => void;
   onToggleTheme: () => void;
+  isAdmin?: boolean;
+  onOpenAdmin?: () => void;
 }
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({
@@ -27,6 +29,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onStartQuickTimer,
   onOpenQuickNote,
   onToggleTheme,
+  isAdmin = false,
+  onOpenAdmin,
 }) => {
   const [query, setQuery] = useState('');
 
@@ -108,8 +112,19 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         category: 'Preferences',
         action: () => onToggleTheme(),
       },
+      ...(isAdmin && onOpenAdmin
+        ? [
+            {
+              id: 'act-admin',
+              label: 'Open Admin Control Panel',
+              shortcut: '⌘⇧A',
+              category: 'Admin',
+              action: () => onOpenAdmin(),
+            },
+          ]
+        : []),
     ],
-    [onNavigate, onOpenQuickNote, onStartQuickTimer, onToggleTheme]
+    [isAdmin, onNavigate, onOpenAdmin, onOpenQuickNote, onStartQuickTimer, onToggleTheme]
   );
 
   const filtered = useMemo(() => {

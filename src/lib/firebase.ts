@@ -22,10 +22,14 @@ export const WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/tasks',
 ] as const;
 
+export const DRIVE_ONLY_SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+] as const;
+
 const app = initializeApp(firebaseConfig);
 const databaseId =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
-  'ai-studio-4c04f183-2f3a-41f1-91b9-700637bab5ec';
+  'ai-studio-studytracker-e35d7615-f3a0-43c8-aca6-ee7b8e3d95bf';
 
 export const db = getFirestore(app, databaseId);
 export const auth = getAuth(app);
@@ -38,6 +42,12 @@ for (const scope of WORKSPACE_SCOPES) {
   workspaceProvider.addScope(scope);
 }
 workspaceProvider.setCustomParameters({ prompt: 'consent select_account' });
+
+const driveOnlyProvider = new GoogleAuthProvider();
+for (const scope of DRIVE_ONLY_SCOPES) {
+  driveOnlyProvider.addScope(scope);
+}
+driveOnlyProvider.setCustomParameters({ prompt: 'consent select_account' });
 
 // In-memory only OAuth access token (never localStorage or sessionStorage)
 let isSigningIn = false;
@@ -131,8 +141,53 @@ function formatAuthError(error: unknown): Error {
         `Domain "${host}" is not authorized in Firebase Authentication for project "${firebaseConfig.projectId}". Add "${host}" under Firebase Console → Authentication → Settings → Authorized domains.`
       );
     }
+    if (code === 'auth/popup-blocked') {
+      return new Error(
+        'Popup was blocked by your browser. Please allow popups for this site and try again.'
+      );
+    }
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+      return new Error(
+        'Sign-in popup was closed before finishing. If Google blocked full Workspace access, try "Connect Drive Only".'
+      );
+    }
   }
   return error instanceof Error ? error : new Error('Google Sign-In failed.');
+}
+
+async function authorizeWithProvider(provider: GoogleAuthProvider): Promise<{
+  user: User;
+  accessToken: string | null;
+}> {
+  try {
+    isSigningIn = true;
+    let result;
+    if (auth.currentUser) {
+      try {
+        result = await reauthenticateWithPopup(auth.currentUser, provider);
+      } catch (reauthErr) {
+        const code =
+          reauthErr && typeof reauthErr === 'object' && 'code' in reauthErr
+            ? (reauthErr as { code?: string }).code
+            : '';
+        if (code === 'auth/user-mismatch' || code === 'auth/operation-not-allowed') {
+          result = await signInWithPopup(auth, provider);
+        } else {
+          throw reauthErr;
+        }
+      }
+    } else {
+      result = await signInWithPopup(auth, provider);
+    }
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    cachedAccessToken = credential?.accessToken ?? null;
+    return { user: result.user, accessToken: cachedAccessToken };
+  } catch (error) {
+    console.error('Google Workspace connection error:', error);
+    throw formatAuthError(error);
+  } finally {
+    isSigningIn = false;
+  }
 }
 
 export async function googleSignIn(): Promise<{
@@ -157,20 +212,14 @@ export async function connectGoogleWorkspace(): Promise<{
   user: User;
   accessToken: string | null;
 }> {
-  try {
-    isSigningIn = true;
-    const result = auth.currentUser
-      ? await reauthenticateWithPopup(auth.currentUser, workspaceProvider)
-      : await signInWithPopup(auth, workspaceProvider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    cachedAccessToken = credential?.accessToken ?? null;
-    return { user: result.user, accessToken: cachedAccessToken };
-  } catch (error) {
-    console.error('Google Workspace connection error:', error);
-    throw formatAuthError(error);
-  } finally {
-    isSigningIn = false;
-  }
+  return authorizeWithProvider(workspaceProvider);
+}
+
+export async function connectGoogleDriveOnly(): Promise<{
+  user: User;
+  accessToken: string | null;
+}> {
+  return authorizeWithProvider(driveOnlyProvider);
 }
 
 export function getAccessToken(): string | null {

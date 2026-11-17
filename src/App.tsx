@@ -14,6 +14,7 @@ import {
   Menu,
   MessageSquarePlus,
   Moon,
+  Shield,
   Sun,
   UserPlus,
   Users,
@@ -45,6 +46,7 @@ import { SignInView } from './components/SignInView.tsx';
 import { getLowMidtermCourses, getMidtermPercent } from './lib/gpa.ts';
 import { soundEngine, SoundscapeType } from './lib/soundscape.ts';
 import {
+  connectGoogleDriveOnly,
   connectGoogleWorkspace,
   db,
   googleSignIn,
@@ -78,6 +80,7 @@ import {
   StudyGroup,
   StudySession,
   SyllabusTopic,
+  SystemSettingsConfig,
   UserProfile,
   UserPublicProfile,
 } from './lib/types.ts';
@@ -114,6 +117,9 @@ function StudyTrackerWorkspace() {
   const [featureFormConfig, setFeatureFormConfig] = useState<FeatureFormConfig | null>(null);
   const [featureRequests, setFeatureRequests] = useState<FeatureRequest[]>([]);
   const [announcement, setAnnouncement] = useState<GlobalAnnouncement | null>(null);
+  const [systemSettings, setSystemSettings] = useState<SystemSettingsConfig | null>(null);
+  const [isDynamicAdmin, setIsDynamicAdmin] = useState(false);
+  const [workspaceBlockedError, setWorkspaceBlockedError] = useState<string | null>(null);
   const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     const raw = new URLSearchParams(window.location.search).get('invite');
@@ -122,6 +128,10 @@ function StudyTrackerWorkspace() {
     return cleaned || null;
   });
   const [acceptingInviteLink, setAcceptingInviteLink] = useState(false);
+
+  const isVerifiedAdmin = Boolean(
+    authUser?.emailVerified && isAppAdmin(authUser.email, isDynamicAdmin)
+  );
 
   const readLegalFromLocation = useCallback((): LegalDocMode | null => {
     if (typeof window === 'undefined') return null;
@@ -269,7 +279,7 @@ function StudyTrackerWorkspace() {
         target?.isContentEditable;
 
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
-        if (authUser?.emailVerified && isAppAdmin(authUser.email)) {
+        if (isVerifiedAdmin) {
           e.preventDefault();
           setHiddenAdminRoute(!adminRouteOpen);
         }
@@ -286,7 +296,7 @@ function StudyTrackerWorkspace() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [adminRouteOpen, authUser, setHiddenAdminRoute]);
+  }, [adminRouteOpen, isVerifiedAdmin, setHiddenAdminRoute]);
 
   // Auth listener
   useEffect(() => {
@@ -296,6 +306,8 @@ function StudyTrackerWorkspace() {
       if (!user) {
         setAccessToken(null);
         setProfile(null);
+        setIsDynamicAdmin(false);
+        setSystemSettings(null);
       }
       setAuthReady(true);
     });
@@ -459,28 +471,20 @@ function StudyTrackerWorkspace() {
       (err) => handleFirestoreError(err, OperationType.GET, 'appConfig/announcement')
     );
 
-    const reqQuery = isAppAdmin(authUser.email)
-      ? collection(db, 'featureRequests')
-      : query(collection(db, 'featureRequests'), where('authorUid', '==', uid));
-
-    const unsubFeatureRequests = onSnapshot(
-      reqQuery,
+    const unsubSystemSettings = onSnapshot(
+      doc(db, 'appConfig', 'systemSettings'),
       (snap) => {
-        const list = snap.docs.map((d) => ({
-          id: d.id,
-          ...(d.data() as Omit<FeatureRequest, 'id'>),
-        }));
-        const toMillis = (val: unknown) => {
-          if (val && typeof val === 'object' && 'toMillis' in val) {
-            const fn = (val as { toMillis?: () => number }).toMillis;
-            if (typeof fn === 'function') return fn();
-          }
-          return 0;
-        };
-        list.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
-        setFeatureRequests(list);
+        setSystemSettings(snap.exists() ? (snap.data() as SystemSettingsConfig) : null);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'featureRequests')
+      (err) => handleFirestoreError(err, OperationType.GET, 'appConfig/systemSettings')
+    );
+
+    const unsubDynamicAdmin = onSnapshot(
+      doc(db, 'admins', uid),
+      (snap) => {
+        setIsDynamicAdmin(snap.exists());
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, `admins/${uid}`)
     );
 
     const unsubStudyGroups = onSnapshot(
@@ -522,9 +526,46 @@ function StudyTrackerWorkspace() {
       unsubStudyGroups();
       unsubFormConfig();
       unsubAnnouncement();
-      unsubFeatureRequests();
+      unsubSystemSettings();
+      unsubDynamicAdmin();
     };
   }, [authUser]);
+
+  // Feature requests listener reacts to admin promotion/revocation in real time
+  useEffect(() => {
+    if (!authUser) {
+      setFeatureRequests([]);
+      return;
+    }
+    const uid = authUser.uid;
+    const reqQuery = isVerifiedAdmin
+      ? collection(db, 'featureRequests')
+      : query(collection(db, 'featureRequests'), where('authorUid', '==', uid));
+
+    const unsubFeatureRequests = onSnapshot(
+      reqQuery,
+      (snap) => {
+        const list = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<FeatureRequest, 'id'>),
+        }));
+        const toMillis = (val: unknown) => {
+          if (val && typeof val === 'object' && 'toMillis' in val) {
+            const fn = (val as { toMillis?: () => number }).toMillis;
+            if (typeof fn === 'function') return fn();
+          }
+          return 0;
+        };
+        list.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+        setFeatureRequests(list);
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'featureRequests')
+    );
+
+    return () => {
+      unsubFeatureRequests();
+    };
+  }, [authUser, isVerifiedAdmin]);
 
   const friendUids = useMemo(() => {
     if (!authUser) return [];
@@ -616,18 +657,46 @@ function StudyTrackerWorkspace() {
   };
 
   const handleConnectWorkspace = async () => {
+    setWorkspaceBlockedError(null);
     try {
       const res = await connectGoogleWorkspace();
       setAuthUser(res.user);
       setAccessToken(res.accessToken);
       if (res.accessToken) {
+        setWorkspaceBlockedError(null);
         notify('Connected to Google Drive, Gmail, Tasks, and Forms.');
+      } else {
+        setWorkspaceBlockedError(
+          'Google did not return a Workspace access token. You can try "Connect Drive Only" to upload & sync files directly.'
+        );
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Could not authorize Google Workspace access.';
+      setWorkspaceBlockedError(msg);
+      notify(msg);
+    }
+  };
+
+  const handleConnectDriveOnly = async () => {
+    setWorkspaceBlockedError(null);
+    try {
+      const res = await connectGoogleDriveOnly();
+      setAuthUser(res.user);
+      setAccessToken(res.accessToken);
+      if (res.accessToken) {
+        setWorkspaceBlockedError(null);
+        notify('Connected to Google Drive (app file upload & sync).');
+      } else {
+        notify('Google Drive token was not granted. Please allow Drive access in the popup.');
       }
     } catch (err) {
       notify(
         err instanceof Error
           ? err.message
-          : 'Could not authorize Google Workspace access.'
+          : 'Could not authorize Google Drive access.'
       );
     }
   };
@@ -745,10 +814,7 @@ function StudyTrackerWorkspace() {
   }
 
   // Stealth 404 for hidden admin route if visitor is not verified admin
-  if (
-    adminRouteOpen &&
-    (!authUser || !authUser.emailVerified || !isAppAdmin(authUser.email))
-  ) {
+  if (adminRouteOpen && !isVerifiedAdmin) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex items-center justify-center p-6">
         <div className="glass-panel rounded-2xl p-8 max-w-md w-full text-center space-y-4">
@@ -783,8 +849,8 @@ function StudyTrackerWorkspace() {
     );
   }
 
-  // Hidden Admin Control Panel (only rendered at /admin-ctrl for verified groweasy25@gmail.com)
-  if (adminRouteOpen && authUser.emailVerified && isAppAdmin(authUser.email)) {
+  // Hidden Admin Control Panel (rendered at /admin-ctrl for verified admins)
+  if (adminRouteOpen && isVerifiedAdmin) {
     return (
       <>
         <AdminControlPanel
@@ -792,8 +858,10 @@ function StudyTrackerWorkspace() {
           featureRequests={featureRequests}
           formConfig={featureFormConfig}
           announcement={announcement}
+          systemSettings={systemSettings}
           accessToken={accessToken}
           onRequestAuth={() => void handleConnectWorkspace()}
+          onRequestDriveOnly={() => void handleConnectDriveOnly()}
           onExitAdmin={() => setHiddenAdminRoute(false)}
           onNotify={notify}
         />
@@ -822,7 +890,7 @@ function StudyTrackerWorkspace() {
     );
   }
 
-  if (profile.suspended && !isAppAdmin(authUser.email)) {
+  if (profile.suspended && !isVerifiedAdmin) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex items-center justify-center p-6">
         <div className="glass-panel rounded-2xl p-8 max-w-md w-full text-center space-y-4">
@@ -844,6 +912,29 @@ function StudyTrackerWorkspace() {
     );
   }
 
+  if (systemSettings?.maintenanceMode && !isVerifiedAdmin) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex items-center justify-center p-6">
+        <div className="glass-panel rounded-2xl p-8 max-w-md w-full text-center space-y-4">
+          <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto" />
+          <h1 className="font-display text-xl font-bold">Scheduled Maintenance</h1>
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            {systemSettings.maintenanceMessage ||
+              'Study Tracker is temporarily undergoing maintenance. Please check back shortly.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-slate-800 rounded-lg"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Sign Out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const activeNavItem = NAV_ITEMS.find((n) => n.id === activeSection) || NAV_ITEMS[0];
   const timerCourseCode = courses.find((c) => c.id === timerCourseId)?.code || 'GENERAL';
 
@@ -851,70 +942,106 @@ function StudyTrackerWorkspace() {
     <div className="min-h-screen bg-gradient-to-br from-slate-100 via-blue-50/40 to-slate-200 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 text-slate-900 dark:text-slate-100 flex relative overflow-x-hidden">
       <AmbientBubbles mode={bubbleMode} darkMode={darkMode} />
 
-      {/* Desktop Sidebar (256px, collapsible) */}
-      <aside
-        className={`hidden ${
-          sidebarCollapsed ? 'lg:hidden' : 'lg:flex'
-        } w-64 shrink-0 flex-col justify-between glass-panel border-r border-white/50 dark:border-slate-800/80 rounded-none relative z-10`}
-      >
-        <div className="p-5 space-y-6">
-          <div className="px-2 py-1 flex items-center justify-between gap-2">
-            <span className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-slate-50 whitespace-nowrap">
-              Study Tracker
-            </span>
-            <button
-              type="button"
-              onClick={() => setSidebarCollapsed(true)}
-              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-md"
-              aria-label="Close sidebar menu"
-              title="Close menu"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          <nav className="space-y-1" aria-label="Main menu">
-            {NAV_ITEMS.map((item) => {
-              const Icon = item.icon;
-              const isActive = activeSection === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setActiveSection(item.id);
-                    setNotesComposeMode(null);
-                  }}
-                  className={`w-full px-3 py-2.5 rounded-lg flex items-center gap-3 text-sm font-medium transition-colors text-left ${
-                    isActive
-                      ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
-                      : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/70 hover:text-slate-900 dark:hover:text-slate-100'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 shrink-0" />
-                  <span className="truncate">
-                    {item.num}. {item.label}
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-
-        <div className="p-5 border-t border-slate-200 dark:border-slate-800 space-y-3">
-          <div className="text-xs text-slate-500 dark:text-slate-400 truncate">
-            {profile.displayName} · {profile.email}
-          </div>
-          <button
-            type="button"
-            onClick={() => void logout()}
-            className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg transition-colors"
+      {/* Desktop Sidebar (256px, smooth animated collapse/expand) */}
+      <AnimatePresence initial={false}>
+        {!sidebarCollapsed && (
+          <motion.aside
+            key="desktop-sidebar"
+            initial={{ width: 0, opacity: 0, x: -20 }}
+            animate={{ width: 256, opacity: 1, x: 0 }}
+            exit={{ width: 0, opacity: 0, x: -20 }}
+            transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+            className="hidden lg:flex shrink-0 flex-col justify-between glass-panel border-r border-white/50 dark:border-slate-800/80 rounded-none relative z-10 overflow-hidden"
           >
-            <LogOut className="w-3.5 h-3.5" />
-            Sign Out
-          </button>
-        </div>
-      </aside>
+            <div className="w-64 h-full flex flex-col justify-between">
+              <div className="p-5 space-y-6">
+                <div className="px-2 py-1 flex items-center justify-between gap-2">
+                  <span className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-slate-50 whitespace-nowrap">
+                    Study Tracker
+                  </span>
+                  <motion.button
+                    type="button"
+                    whileHover={{ scale: 1.08 }}
+                    whileTap={{ scale: 0.92 }}
+                    onClick={() => setSidebarCollapsed(true)}
+                    className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-md transition-colors"
+                    aria-label="Close sidebar menu"
+                    title="Close menu"
+                  >
+                    <X className="w-4 h-4" />
+                  </motion.button>
+                </div>
+
+                <nav className="space-y-1" aria-label="Main menu">
+                  {NAV_ITEMS.map((item) => {
+                    const Icon = item.icon;
+                    const isActive = activeSection === item.id;
+                    return (
+                      <motion.button
+                        key={item.id}
+                        type="button"
+                        whileHover={{ x: 3 }}
+                        whileTap={{ scale: 0.985 }}
+                        transition={{ duration: 0.15 }}
+                        onClick={() => {
+                          setActiveSection(item.id);
+                          setNotesComposeMode(null);
+                        }}
+                        className={`relative w-full px-3 py-2.5 rounded-lg flex items-center gap-3 text-sm font-medium transition-colors text-left ${
+                          isActive
+                            ? 'text-blue-700 dark:text-blue-300'
+                            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100/70 dark:hover:bg-slate-800/60 hover:text-slate-900 dark:hover:text-slate-100'
+                        }`}
+                      >
+                        {isActive && (
+                          <motion.span
+                            layoutId="desktopNavPill"
+                            transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                            className="absolute inset-0 rounded-lg bg-blue-50/95 dark:bg-blue-950/70 border border-blue-200/70 dark:border-blue-800/60 shadow-xs"
+                          />
+                        )}
+                        <Icon className="w-4 h-4 shrink-0 relative z-10" />
+                        <span className="truncate relative z-10">
+                          {item.num}. {item.label}
+                        </span>
+                      </motion.button>
+                    );
+                  })}
+                </nav>
+              </div>
+
+              <div className="p-5 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+                <div className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                  {profile.displayName} · {profile.email}
+                </div>
+                {isVerifiedAdmin && (
+                  <motion.button
+                    type="button"
+                    whileHover={{ y: -1 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => setHiddenAdminRoute(true)}
+                    className="w-full inline-flex items-center justify-between px-3 py-2 text-xs font-semibold text-blue-700 dark:text-blue-300 bg-blue-50/90 dark:bg-blue-950/70 border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/60 rounded-lg transition-colors"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Shield className="w-3.5 h-3.5" />
+                      Admin Panel
+                    </span>
+                    <span className="font-mono text-[10px] opacity-75">⌘⇧A</span>
+                  </motion.button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void logout()}
+                  className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-red-400 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          </motion.aside>
+        )}
+      </AnimatePresence>
 
       {/* Mobile Drawer */}
       <AnimatePresence>
@@ -923,15 +1050,15 @@ function StudyTrackerWorkspace() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.18 }}
+            transition={{ duration: 0.2 }}
             className="fixed inset-0 z-50 lg:hidden bg-slate-950/60 backdrop-blur-xs flex"
             onClick={() => setMobileMenuOpen(false)}
           >
             <motion.aside
-              initial={{ x: -260 }}
+              initial={{ x: -272 }}
               animate={{ x: 0 }}
-              exit={{ x: -260 }}
-              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              exit={{ x: -272 }}
+              transition={{ type: 'spring', stiffness: 360, damping: 34 }}
               className="w-64 glass-panel h-full p-5 flex flex-col justify-between border-r border-white/50 dark:border-slate-800/80 rounded-none"
               onClick={(e) => e.stopPropagation()}
             >
@@ -941,46 +1068,73 @@ function StudyTrackerWorkspace() {
                   <button
                     type="button"
                     onClick={() => setMobileMenuOpen(false)}
-                    className="p-1 text-slate-400"
+                    className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-md"
+                    aria-label="Close mobile menu"
                   >
                     <X className="w-5 h-5" />
                   </button>
                 </div>
                 <nav className="space-y-1">
-                  {NAV_ITEMS.map((item) => {
+                  {NAV_ITEMS.map((item, idx) => {
                     const Icon = item.icon;
                     const isActive = activeSection === item.id;
                     return (
-                      <button
+                      <motion.button
                         key={item.id}
                         type="button"
+                        initial={{ opacity: 0, x: -12 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: idx * 0.03, duration: 0.2 }}
+                        whileTap={{ scale: 0.985 }}
                         onClick={() => {
                           setActiveSection(item.id);
                           setMobileMenuOpen(false);
                         }}
-                        className={`w-full px-3 py-2.5 rounded-lg flex items-center gap-3 text-sm font-medium text-left ${
+                        className={`relative w-full px-3 py-2.5 rounded-lg flex items-center gap-3 text-sm font-medium text-left transition-colors ${
                           isActive
-                            ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
-                            : 'text-slate-600 dark:text-slate-400'
+                            ? 'text-blue-700 dark:text-blue-300'
+                            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100/70 dark:hover:bg-slate-800/60'
                         }`}
                       >
-                        <Icon className="w-4 h-4 shrink-0" />
-                        <span className="truncate">
+                        {isActive && (
+                          <motion.span
+                            layoutId="mobileNavPill"
+                            transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                            className="absolute inset-0 rounded-lg bg-blue-50 dark:bg-blue-950/60 border border-blue-200/70 dark:border-blue-800/60"
+                          />
+                        )}
+                        <Icon className="w-4 h-4 shrink-0 relative z-10" />
+                        <span className="truncate relative z-10">
                           {item.num}. {item.label}
                         </span>
-                      </button>
+                      </motion.button>
                     );
                   })}
                 </nav>
               </div>
-              <button
-                type="button"
-                onClick={() => void logout()}
-                className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-lg"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                Sign Out
-              </button>
+              <div className="space-y-2.5">
+                {isVerifiedAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      setHiddenAdminRoute(true);
+                    }}
+                    className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg"
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    Admin Panel
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void logout()}
+                  className="w-full inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-lg"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Sign Out
+                </button>
+              </div>
             </motion.aside>
           </motion.div>
         )}
@@ -991,23 +1145,34 @@ function StudyTrackerWorkspace() {
         {/* Top Bar with Menu Open/Close & Quick Command on Right */}
         <header className="h-16 glass-panel border-b border-white/50 dark:border-slate-800/80 rounded-none px-6 flex items-center justify-between gap-4 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
-            <button
+            <motion.button
               type="button"
+              whileTap={{ scale: 0.92 }}
               onClick={() => setMobileMenuOpen(true)}
               className="lg:hidden p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 rounded-lg"
               aria-label="Open navigation menu"
             >
               <Menu className="w-5 h-5" />
-            </button>
-            <button
+            </motion.button>
+            <motion.button
               type="button"
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.92 }}
               onClick={() => setSidebarCollapsed((v) => !v)}
-              className="hidden lg:inline-flex p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 glass-subtle rounded-lg"
+              className="hidden lg:inline-flex items-center justify-center p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 glass-subtle rounded-lg transition-colors"
               aria-label={sidebarCollapsed ? 'Open navigation menu' : 'Close navigation menu'}
               title={sidebarCollapsed ? 'Open Menu' : 'Close Menu'}
             >
-              <Menu className="w-4 h-4" />
-            </button>
+              <motion.span
+                key={sidebarCollapsed ? 'closed' : 'open'}
+                initial={{ rotate: -90, opacity: 0 }}
+                animate={{ rotate: 0, opacity: 1 }}
+                transition={{ duration: 0.18 }}
+                className="inline-flex"
+              >
+                <Menu className="w-4 h-4" />
+              </motion.span>
+            </motion.button>
             <span className="text-sm font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap truncate">
               Study Tracker / {activeNavItem.num}. {activeNavItem.label}
             </span>
@@ -1056,7 +1221,55 @@ function StudyTrackerWorkspace() {
 
         {/* Main Viewport */}
         <main className="flex-1 p-6 lg:p-8 max-w-6xl w-full mx-auto">
-          {/* Global Announcement Banner (managed via hidden Admin Control Panel) */}
+          {/* Admin Maintenance Mode Active Notice */}
+          {systemSettings?.maintenanceMode && isVerifiedAdmin && (
+            <div className="mb-6 p-3.5 glass-panel border border-amber-300/80 dark:border-amber-800/80 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 text-xs sm:text-sm text-amber-800 dark:text-amber-300">
+                <Shield className="w-4 h-4 shrink-0" />
+                <span>
+                  <strong>Maintenance Mode is active:</strong> regular student accounts see the maintenance screen.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHiddenAdminRoute(true)}
+                className="px-3 py-1.5 text-xs font-semibold text-amber-900 dark:text-amber-100 bg-amber-200/80 dark:bg-amber-900/60 hover:bg-amber-300/80 rounded-lg whitespace-nowrap shrink-0"
+              >
+                Manage in Admin Panel
+              </button>
+            </div>
+          )}
+
+          {/* Google Workspace Blocked Fallback Banner */}
+          {workspaceBlockedError && !accessToken && (
+            <div className="mb-6 p-4 glass-panel border border-blue-300/80 dark:border-blue-800/80 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="text-xs sm:text-sm text-slate-700 dark:text-slate-200">
+                <strong className="text-slate-900 dark:text-slate-100">
+                  Google Workspace prompt did not complete:
+                </strong>{' '}
+                {workspaceBlockedError}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => void handleConnectDriveOnly()}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg whitespace-nowrap"
+                >
+                  Connect Drive Only
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWorkspaceBlockedError(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                  aria-label="Dismiss notice"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Global Announcement Banner (managed via Admin Control Panel) */}
           {announcement?.enabled && announcement.message && (
             <motion.div
               initial={{ opacity: 0, y: -8 }}
@@ -1176,6 +1389,7 @@ function StudyTrackerWorkspace() {
                   onChangeSoundscape={handleChangeSoundscape}
                   onChangeSoundVolume={handleChangeSoundVolume}
                   onReconnectWorkspace={() => void handleConnectWorkspace()}
+                  onConnectDriveOnly={() => void handleConnectDriveOnly()}
                   onStartQuickTimer={handleStartTimer}
                   onStopAndSaveTimer={() => void handleStopAndSaveTimer()}
                   onOpenFocusZoom={() => setFocusZoomOpen(true)}
@@ -1233,6 +1447,7 @@ function StudyTrackerWorkspace() {
                   studyGroups={studyGroups}
                   accessToken={accessToken}
                   onRequestAuth={() => void handleConnectWorkspace()}
+                  onRequestDriveOnly={() => void handleConnectDriveOnly()}
                   onNotify={notify}
                   initialComposeMode={notesComposeMode}
                 />
@@ -1333,6 +1548,8 @@ function StudyTrackerWorkspace() {
           setNotesComposeMode('text');
         }}
         onToggleTheme={() => setDarkMode((v) => !v)}
+        isAdmin={isVerifiedAdmin}
+        onOpenAdmin={() => setHiddenAdminRoute(true)}
       />
 
       {/* Toast Feedback */}

@@ -51,6 +51,7 @@ interface OverviewViewProps {
   onChangeSoundscape: (type: SoundscapeType) => void;
   onChangeSoundVolume: (vol: number) => void;
   onReconnectWorkspace: () => void;
+  onConnectDriveOnly?: () => void;
   onStartQuickTimer: () => void;
   onStopAndSaveTimer: () => void;
   onOpenFocusZoom: () => void;
@@ -96,6 +97,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onChangeSoundscape,
   onChangeSoundVolume,
   onReconnectWorkspace,
+  onConnectDriveOnly,
   onStartQuickTimer,
   onStopAndSaveTimer,
   onOpenFocusZoom,
@@ -156,13 +158,25 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         </div>
 
         {!hasWorkspaceToken && (
-          <button
-            type="button"
-            onClick={onReconnectWorkspace}
-            className="px-4 py-2 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-50/90 dark:bg-blue-950/70 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors whitespace-nowrap shrink-0"
-          >
-            Authorize Drive, Gmail & Tasks
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={onReconnectWorkspace}
+              className="px-4 py-2 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-50/90 dark:bg-blue-950/70 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors whitespace-nowrap shrink-0"
+            >
+              Authorize Drive, Gmail & Tasks
+            </button>
+            {onConnectDriveOnly && (
+              <button
+                type="button"
+                onClick={onConnectDriveOnly}
+                className="px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 glass-subtle hover:bg-white/80 dark:hover:bg-slate-800/80 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                title="Authorize only Google Drive app uploads if full Workspace scopes are blocked"
+              >
+                Drive Only
+              </button>
+            )}
+          </div>
         )}
       </div>
 

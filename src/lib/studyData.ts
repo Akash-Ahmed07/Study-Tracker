@@ -14,6 +14,7 @@ import {
 import { User } from 'firebase/auth';
 import { db, handleFirestoreError, OperationType } from './firebase.ts';
 import {
+  AdminRole,
   Course,
   CourseProgressSummary,
   FeatureFormConfig,
@@ -27,8 +28,10 @@ import {
   NoteOrFile,
   SharedNote,
   StudyGroup,
+  StudyGroupMessage,
   StudySession,
   SyllabusTopic,
+  SystemSettingsConfig,
   TopicStatus,
   UserProfile,
   UserPublicProfile,
@@ -1166,26 +1169,199 @@ export async function setUserSuspensionAdmin(
   }
 }
 
+export async function checkIsDynamicAdmin(uid: string): Promise<boolean> {
+  try {
+    const snap = await getDoc(doc(db, 'admins', uid));
+    return snap.exists();
+  } catch {
+    return false;
+  }
+}
+
+export async function grantAdminRoleAdmin(uid: string, email: string): Promise<void> {
+  const path = `admins/${uid}`;
+  try {
+    await setDoc(doc(db, 'admins', uid), {
+      uid,
+      email: email.trim().slice(0, 200),
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function revokeAdminRoleAdmin(uid: string): Promise<void> {
+  const path = `admins/${uid}`;
+  try {
+    await deleteDoc(doc(db, 'admins', uid));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function updateUserAdmin(
+  targetUid: string,
+  updates: {
+    displayName: string;
+    gradingScale: GradingScale;
+    weeklyGoalMinutes: number;
+  }
+): Promise<void> {
+  const path = `users/${targetUid}`;
+  const cleanName = updates.displayName.trim().slice(0, 100) || 'Student';
+  const cleanGoal = Math.max(30, Math.min(10080, Number(updates.weeklyGoalMinutes) || 600));
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'users', targetUid), {
+      displayName: cleanName,
+      gradingScale: updates.gradingScale,
+      weeklyGoalMinutes: cleanGoal,
+      updatedAt: serverTimestamp(),
+    });
+    const pubRef = doc(db, 'userPublicProfiles', targetUid);
+    const pubSnap = await getDoc(pubRef);
+    if (pubSnap.exists()) {
+      batch.update(pubRef, {
+        displayName: cleanName,
+        weeklyGoalMinutes: cleanGoal,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteUserAccountAdmin(target: UserProfile): Promise<void> {
+  const path = `users/${target.uid}`;
+  try {
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'users', target.uid));
+    batch.delete(doc(db, 'userPublicProfiles', target.uid));
+    if (target.friendCode) {
+      batch.delete(doc(db, 'friendCodes', target.friendCode));
+    }
+    if (target.email) {
+      const eHash = await hashEmail(target.email);
+      batch.delete(doc(db, 'emailLookup', eHash));
+    }
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function saveSystemSettingsConfig(
+  uid: string,
+  settings: Omit<SystemSettingsConfig, 'updatedByUid' | 'updatedAt'>
+): Promise<void> {
+  const path = 'appConfig/systemSettings';
+  try {
+    await setDoc(doc(db, 'appConfig', 'systemSettings'), {
+      maintenanceMode: Boolean(settings.maintenanceMode),
+      maintenanceMessage: settings.maintenanceMessage.trim().slice(0, 500),
+      allowSharedNotes: Boolean(settings.allowSharedNotes),
+      maxGroupMembers: Math.max(2, Math.min(25, Math.round(Number(settings.maxGroupMembers) || 25))),
+      defaultWeeklyGoalMinutes: Math.max(
+        30,
+        Math.min(10080, Math.round(Number(settings.defaultWeeklyGoalMinutes) || 600))
+      ),
+      updatedByUid: uid,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function fetchStudyGroupMessagesAdmin(
+  groupId: string
+): Promise<StudyGroupMessage[]> {
+  const path = `studyGroups/${groupId}/messages`;
+  try {
+    const snap = await getDocs(collection(db, 'studyGroups', groupId, 'messages'));
+    const toMillis = (val: unknown) => {
+      if (val && typeof val === 'object' && 'toMillis' in val) {
+        const fn = (val as { toMillis?: () => number }).toMillis;
+        if (typeof fn === 'function') return fn();
+      }
+      return 0;
+    };
+    return snap.docs
+      .map((d) => ({ id: d.id, ...(d.data() as Omit<StudyGroupMessage, 'id'>) }))
+      .sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export async function updateStudyGroupAdmin(
+  groupId: string,
+  updates: {
+    name: string;
+    courseCode: string;
+    memberUids: string[];
+  }
+): Promise<void> {
+  const path = `studyGroups/${groupId}`;
+  try {
+    await updateDoc(doc(db, 'studyGroups', groupId), {
+      name: updates.name.trim().slice(0, 100) || 'Study Group',
+      courseCode: updates.courseCode.trim().slice(0, 32) || 'GENERAL',
+      memberUids: updates.memberUids.slice(0, 25),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteSharedNoteAdmin(sharedNoteId: string): Promise<void> {
+  const path = `sharedNotes/${sharedNoteId}`;
+  try {
+    await deleteDoc(doc(db, 'sharedNotes', sharedNoteId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
 export async function fetchAdminDashboardData(): Promise<{
   users: UserProfile[];
   publicProfiles: UserPublicProfile[];
   groups: StudyGroup[];
+  admins: AdminRole[];
+  sharedNotes: SharedNote[];
+  systemSettings: SystemSettingsConfig | null;
 }> {
   try {
-    const [usersSnap, pubSnap, groupsSnap] = await Promise.all([
+    const [usersSnap, pubSnap, groupsSnap, adminsSnap, sharedSnap, settingsSnap] = await Promise.all([
       getDocs(collection(db, 'users')),
       getDocs(collection(db, 'userPublicProfiles')),
       getDocs(collection(db, 'studyGroups')),
+      getDocs(collection(db, 'admins')),
+      getDocs(collection(db, 'sharedNotes')),
+      getDoc(doc(db, 'appConfig', 'systemSettings')),
     ]);
     return {
       users: usersSnap.docs.map((d) => d.data() as UserProfile),
       publicProfiles: pubSnap.docs.map((d) => d.data() as UserPublicProfile),
       groups: groupsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<StudyGroup, 'id'>) })),
+      admins: adminsSnap.docs.map((d) => d.data() as AdminRole),
+      sharedNotes: sharedSnap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<SharedNote, 'id'>),
+      })),
+      systemSettings: settingsSnap.exists()
+        ? (settingsSnap.data() as SystemSettingsConfig)
+        : null,
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, 'admin_dashboard');
   }
 }
+
 
 
 
