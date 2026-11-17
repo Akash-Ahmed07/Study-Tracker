@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import {
   BookOpen,
   Calculator,
@@ -948,6 +949,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <StudyTrackerWorkspace />
+      <Analytics />
     </ErrorBoundary>
   );
 }
